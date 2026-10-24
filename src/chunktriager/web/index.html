@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Chunk Triager</title>
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div id="map"></div>
+  <aside id="panel">
+    <section>
+      <h2>标注</h2>
+      <div class="tools">
+        <button data-label="keep" class="keep">保留 <kbd>K</kbd></button>
+        <button data-label="delete" class="delete">删除 <kbd>D</kbd></button>
+        <button data-label="clear">清除 <kbd>C</kbd></button>
+      </div>
+      <p class="hint">点击：标注单个区块。Shift + 拖动：标注矩形区域。<kbd>Ctrl+Z</kbd> 撤销。<kbd>G</kbd> 切换网格。</p>
+      <div id="counts"></div>
+    </section>
+    <section>
+      <h2>底图</h2>
+      <div id="layers"></div>
+      <label>标注透明度 <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.45"></label>
+    </section>
+    <section id="detail">
+      <h2>区块</h2>
+      <div id="detail-body" class="muted">悬停或点击一个区块</div>
+    </section>
+    <section>
+      <h2>导出</h2>
+      <div id="export-preview" class="muted"></div>
+      <button id="export">导出删除选区</button>
+      <div id="export-result"></div>
+    </section>
+  </aside>
+  <div id="cursor"></div>
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

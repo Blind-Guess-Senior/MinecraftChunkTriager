@@ -1,0 +1,25 @@
+html, body { margin: 0; height: 100%; font: 13px/1.45 system-ui, sans-serif; color: #ddd; background: #111; }
+#map { position: absolute; inset: 0 320px 0 0; background: #000; }
+#panel { position: absolute; top: 0; right: 0; bottom: 0; width: 320px; overflow-y: auto;
+  box-sizing: border-box; padding: 8px 12px; background: #1b1b1b; border-left: 1px solid #333; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #888; margin: 14px 0 6px; }
+section:first-child h2 { margin-top: 4px; }
+button { font: inherit; color: #ddd; background: #2a2a2a; border: 1px solid #444; border-radius: 3px;
+  padding: 4px 8px; cursor: pointer; }
+button:hover { background: #333; }
+button.active { outline: 2px solid #fff; }
+button.keep { border-color: #2e8b57; }
+button.delete { border-color: #c0392b; }
+.tools { display: flex; gap: 6px; }
+kbd { font-size: 11px; color: #999; }
+.hint, .muted { color: #888; }
+#layers label { display: block; }
+#counts span { display: inline-block; margin-right: 10px; }
+#detail-body table { border-collapse: collapse; width: 100%; }
+#detail-body td { padding: 1px 4px; border-bottom: 1px solid #2a2a2a; }
+#detail-body td:last-child { text-align: right; }
+#detail-body code { user-select: all; background: #000; padding: 1px 4px; }
+#cursor { position: absolute; left: 8px; bottom: 8px; padding: 2px 6px; background: rgba(0,0,0,.7);
+  pointer-events: none; z-index: 1000; }
+.leaflet-container { background: #000; }
+.box-select { border: 1px dashed #fff; background: rgba(255,255,255,.12); }
