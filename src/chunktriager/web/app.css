@@ -13,6 +13,8 @@ label { display: block; margin: 5px 0; }
 button { font: inherit; color: #ddd; background: #2a2a2a; border: 1px solid #444; border-radius: 4px;
   padding: 4px 10px; cursor: pointer; }
 button:hover { background: #333; }
+button.wide { width: 100%; margin-top: 4px; }
+button:disabled { color: #666; cursor: default; background: #222; }
 button.danger { width: 100%; color: #e88; border-color: #6b2b2b; }
 button.danger:hover { background: #3a1f1f; }
 
@@ -50,8 +52,8 @@ button.danger:hover { background: #3a1f1f; }
 #cursor { position: absolute; left: 8px; bottom: 8px; padding: 2px 6px; background: rgba(0,0,0,.7);
   pointer-events: none; z-index: 1000; }
 
-#legend { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 6px 0; }
-#legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+#legend, .legend { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 6px 0; }
+#legend .swatch, .legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 #legend .ramp { display: inline-block; width: 60px; height: 10px; border-radius: 2px;
   background: linear-gradient(90deg, rgb(255,220,0), rgb(255,0,0)); }
 #review { max-height: 220px; overflow-y: auto; margin: 6px 0 0; padding-left: 28px; }
@@ -59,3 +61,4 @@ button.danger:hover { background: #3a1f1f; }
 #review li:hover { color: #fff; }
 #review li span { color: #888; margin-left: 6px; }
 code { font: 12px ui-monospace, monospace; }
+[hidden] { display: none !important; }

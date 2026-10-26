@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from .config import Config, World
 from .features.store import read_positions
 from .model.predict import FILE, load_predictions
+from .proposals import EXTRA, KINDS, from_features
 from .render import tile_path
 from .store import Store
 from .versions import UnsupportedChunkError, VersionProfile
@@ -23,6 +24,11 @@ WEB_DIR = Path(__file__).parent / "web"
 MAX_RECT_CHUNKS = 1_000_000
 # Region state string alphabet: absent, unlabeled, keep, delete.
 _STATE_CHAR = {None: "u", "keep": "k", "delete": "d"}
+
+
+class AcceptRequest(BaseModel):
+    # Proposal kinds to write as player-made; chunks with a label are left alone.
+    kinds: list[Literal["e", "s"]] = Field(default_factory=lambda: [EXTRA])
 
 
 class LabelRequest(BaseModel):
@@ -100,6 +106,23 @@ def create_app(cfg: Config, world: World, profile: VersionProfile, dimension_dir
     present = {(x // REGION_CHUNKS, z // REGION_CHUNKS) for x, z in chunks}
     app = FastAPI(title="chunktriager")
     preds = _PredictionCache(world.cache_dir)
+    proposals = from_features(features_dir, profile.read_generator(world.path, dim))
+    proposals_by_region: dict[tuple[int, int], bytearray] = {}
+    if proposals is not None:
+        for (x, z), kind in proposals.kind.items():
+            key = (x // REGION_CHUNKS, z // REGION_CHUNKS)
+            row = proposals_by_region.setdefault(key, bytearray(b"." * REGION_CHUNKS ** 2))
+            row[(z % REGION_CHUNKS) * REGION_CHUNKS + x % REGION_CHUNKS] = ord(kind)
+
+    def proposal_summary() -> dict | None:
+        if proposals is None:
+            return None
+        labels = store.labels(dim)
+        pending = dict.fromkeys(KINDS, 0)
+        for p, kind in proposals.kind.items():
+            if p not in labels:
+                pending[kind] += 1
+        return {"baseline": proposals.baseline, "counts": proposals.counts(), "pending": pending}
 
     @app.get("/api/meta")
     def meta() -> dict:
@@ -119,7 +142,26 @@ def create_app(cfg: Config, world: World, profile: VersionProfile, dimension_dir
             "chunk_count": len(chunks),
             "counts": store.label_counts(dim),
             "predictions": preds.summary(),
+            "proposals": proposal_summary(),
         }
+
+    @app.get("/api/proposals")
+    def proposal_regions(rx0: int, rz0: int, rx1: int, rz1: int) -> dict:
+        """Per region: 1024 chars, "." none, "e" extra content, "s" extra content in a structure."""
+        if (rx1 - rx0 + 1) * (rz1 - rz0 + 1) > 4096:
+            raise HTTPException(400, "region range too large")
+        return {f"{rx},{rz}": v.decode() for (rx, rz), v in proposals_by_region.items()
+                if rx0 <= rx <= rx1 and rz0 <= rz <= rz1}
+
+    @app.post("/api/proposals/accept")
+    def accept_proposals(req: AcceptRequest) -> dict:
+        """Write unlabeled proposals of the given kinds as player-made, as one undoable batch."""
+        if proposals is None:
+            raise HTTPException(404, "this world has no generator baseline")
+        labels = store.labels(dim)
+        targets = [p for p, kind in proposals.kind.items() if kind in req.kinds and p not in labels]
+        changed = store.set_labels(dim, targets, "keep", "proposal", known=chunks)
+        return {"changed": changed, "counts": store.label_counts(dim), "proposals": proposal_summary()}
 
     @app.get("/api/predictions")
     def predictions(rx0: int, rz0: int, rx1: int, rz1: int) -> dict:

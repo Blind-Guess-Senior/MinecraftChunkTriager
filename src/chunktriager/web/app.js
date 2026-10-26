@@ -5,6 +5,8 @@
 const REGION = 32;          // chunks per region side
 const CHUNK = 16;           // blocks per chunk side
 const RGB = { k: [46, 139, 87], d: [192, 57, 43] };
+// Unlabeled chunks the generator baseline proposes as player-made.
+const PROPOSAL_RGB = { e: [240, 200, 40], s: [80, 170, 230] };
 const CHAR = { keep: "k", delete: "d", clear: "u" };
 // Zoom 5 is one chunk per 512 px tile; below LABEL_MIN_ZOOM a tile would
 // cover too many chunks for a per-chunk bitmap.
@@ -27,6 +29,10 @@ const state = {
   view: "labels",
   // "rx,rz" -> { prob: Uint8Array(1024), protected: string } from the last predict.
   preds: new Map(),
+  // "rx,rz" -> string of 1024 proposal chars ("." none, "e", "s"); null if none.
+  proposals: new Map(),
+  hasProposals: false,
+  showProposals: true,
   counts: { keep: 0, delete: 0 },
   opacity: 0.45,
   // "rx,rz" -> array of 1024 state chars ("." absent, "u", "k", "d"), or
@@ -111,6 +117,22 @@ async function loadPredictions(rx0, rz0, rx1, rz1) {
   }
 }
 
+async function loadProposals(rx0, rz0, rx1, rz1) {
+  const missing = [];
+  for (let rx = rx0; rx <= rx1; rx++)
+    for (let rz = rz0; rz <= rz1; rz++)
+      if (!state.proposals.has(`${rx},${rz}`)) missing.push(`${rx},${rz}`);
+  if (!missing.length) return;
+  const data = await api(`/api/proposals?rx0=${rx0}&rz0=${rz0}&rx1=${rx1}&rz1=${rz1}`);
+  for (const key of missing) state.proposals.set(key, data[key] || null);
+}
+
+function proposalAt(cx, cz) {
+  const p = state.proposals.get(`${regionOf(cx)},${regionOf(cz)}`);
+  const c = p ? p[mod(cz, REGION) * REGION + mod(cx, REGION)] : ".";
+  return c === "." ? null : c;
+}
+
 function predAt(cx, cz) {
   const p = state.preds.get(`${regionOf(cx)},${regionOf(cz)}`);
   if (!p) return null;
@@ -121,7 +143,11 @@ function predAt(cx, cz) {
 // Colour of one chunk in the current view, or null for transparent.
 function chunkColour(cx, cz) {
   const s = chunkState(cx, cz);
-  if (state.view === "labels") return RGB[s] || null;
+  if (state.view === "labels") {
+    if (RGB[s]) return RGB[s];
+    if (s === "u" && state.showProposals && state.hasProposals) return PROPOSAL_RGB[proposalAt(cx, cz)] || null;
+    return null;
+  }
   const p = predAt(cx, cz);
   if (!p) return null;
   if (state.view === "prob") {
@@ -206,7 +232,8 @@ const LabelLayer = L.GridLayer.extend({
     tile.width = tile.height = this.getTileSize().x;
     const r = tileRange(coords);
     Promise.all([loadRegions(r.rx0, r.rz0, r.rx1, r.rz1),
-                 state.hasPreds ? loadPredictions(r.rx0, r.rz0, r.rx1, r.rz1) : null])
+                 state.hasPreds ? loadPredictions(r.rx0, r.rz0, r.rx1, r.rz1) : null,
+                 state.hasProposals ? loadProposals(r.rx0, r.rz0, r.rx1, r.rz1) : null])
       .then(() => { paintTile(tile, r); tile._range = r; done(null, tile); })
       .catch((e) => done(e, tile));
     return tile;
@@ -371,10 +398,12 @@ async function showDetail(cx, cz) {
   }
   try {
     const d = await api(`/api/chunk/${cx}/${cz}`);
+    const proposal = { e: "含基底以外的方块或实体", s: "含基底以外的方块或实体，且在天然结构内" }[proposalAt(cx, cz)];
     const rows = d.block_entities.map(([id, n]) => `<tr><td>${id}</td><td>${n}</td></tr>`).join("");
     el.innerHTML =
       `<div>区块 (${d.x}, ${d.z}) · ${d.region}</div>` +
       `<div>标签：${d.label ?? "未标注"}${d.source ? ` (${d.source})` : ""}</div>` +
+      (proposal ? `<div>提议：${proposal}</div>` : "") +
       `<div><code>${d.tp}</code></div>` +
       `<h2>方块实体</h2>` + (rows ? `<table>${rows}</table>` : `<div class="muted">无</div>`);
   } catch (e) {
@@ -560,6 +589,45 @@ for (const b of document.querySelectorAll("#view button"))
 for (const b of document.querySelectorAll("#review-kind button"))
   b.addEventListener("click", () => renderReview(b.dataset.v));
 
+function renderProposals(summary) {
+  const { counts, pending } = summary;
+  document.getElementById("proposal-info").textContent =
+    `生成器基底：${summary.baseline}。${counts.e + counts.s} 个区块含基底以外的方块或实体` +
+    (counts.s ? `，其中 ${counts.s} 个在天然结构内` : "") +
+    `。未标注：${pending.e + pending.s}。`;
+  document.getElementById("accept-structure").parentElement.hidden = !counts.s;
+  for (const el of document.querySelectorAll(".structure-key")) el.hidden = !counts.s;
+  document.getElementById("accept").disabled = !(pending.e + (state.acceptStructure ? pending.s : 0));
+}
+
+function setupProposals(summary) {
+  state.hasProposals = !!summary;
+  document.getElementById("proposals").hidden = !summary;
+  if (!summary) return;
+  renderProposals(summary);
+}
+
+document.getElementById("show-proposals").addEventListener("change", (e) => {
+  state.showProposals = e.target.checked;
+  renderView();
+});
+document.getElementById("accept-structure").addEventListener("change", async (e) => {
+  state.acceptStructure = e.target.checked;
+  renderProposals((await api("/api/meta")).proposals);
+});
+document.getElementById("accept").addEventListener("click", async () => {
+  await flushing;
+  try {
+    const kinds = state.acceptStructure ? ["e", "s"] : ["e"];
+    const res = await api("/api/proposals/accept", { method: "POST", body: { kinds } });
+    renderCounts(res.counts);
+    renderProposals(res.proposals);
+    document.getElementById("detail-body").innerHTML =
+      `<div class="muted">${res.changed} 个区块已写入为人工。Ctrl+Z 撤销。</div>`;
+  } catch (err) { showError(err); }
+  await labels.reload();
+});
+
 function setupModel(summary) {
   state.hasPreds = !!summary;
   document.getElementById("model-none").hidden = state.hasPreds;
@@ -606,7 +674,9 @@ async function init() {
   } else {
     map.setView([0, 0], START_ZOOM);
   }
+  setupProposals(meta.proposals);
   setupModel(meta.predictions);
+  renderView();
   labels.addTo(map);
   renderCounts(meta.counts);
 }

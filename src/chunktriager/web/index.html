@@ -39,6 +39,17 @@
       <label><input type="checkbox" id="grid" checked> 网格 <kbd>G</kbd></label>
       <label>标注不透明度 <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.45"></label>
     </section>
+    <section id="proposals" hidden>
+      <h2>基底提议</h2>
+      <div id="proposal-info" class="muted"></div>
+      <div class="legend">
+        <i class="swatch" style="background:#f0c828"></i><span>未标注，含基底以外的内容</span>
+        <i class="swatch structure-key" style="background:#50aae6"></i><span class="structure-key">同上，在天然结构内</span>
+      </div>
+      <label><input type="checkbox" id="show-proposals" checked> 显示未标注的提议</label>
+      <label hidden><input type="checkbox" id="accept-structure"> 包括天然结构内的提议</label>
+      <button id="accept" class="wide">将未标注的提议写入为人工</button>
+    </section>
     <section id="model">
       <h2>模型</h2>
       <div id="model-none" class="muted">还没有预测结果。运行 <code>chunktriager train</code> 和 <code>chunktriager predict</code> 后刷新。</div>

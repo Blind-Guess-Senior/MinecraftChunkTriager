@@ -17,7 +17,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 LABELS = ("keep", "delete")
-SOURCES = ("single", "area", "model")
+SOURCES = ("single", "area", "model", "proposal")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS labels (
