@@ -41,22 +41,20 @@ def test_meta_and_state(client: TestClient):
     assert state["-1,0"][31] == "u" and state["-1,0"][0] == "u"
 
 
-def test_label_undo_and_export(client: TestClient, workspace: Path):
+def test_label_undo_and_clear_all(client: TestClient):
     r = client.post("/api/labels", json={"label": "delete", "source": "area", "rect": [-40, -5, 5, 5]})
     assert r.json()["changed"] == 5
     client.post("/api/labels", json={"label": "keep", "chunks": [[0, 1]]})
     s = client.get("/api/state", params=dict(rx0=0, rz0=0, rx1=0, rz1=0)).json()["0,0"]
     assert (s[0], s[32]) == ("d", "k")
 
-    # buffer=1 protects (0,0), (1,0) and (-1,0) around the kept (0,1).
-    preview = client.get("/api/export/preview").json()
-    assert (preview["delete"], preview["kept_by_buffer"]) == (1, 3)
-    out = Path(client.post("/api/export").json()["path"])
-    assert out.parent == workspace / "exports"
-    assert out.read_text() == "-1;0;-32;0\n"
-
     client.post("/api/undo")
     assert client.get("/api/chunk/0/1").json()["label"] == "delete"
+
+    r = client.post("/api/labels/clear").json()
+    assert r["changed"] == 5 and r["counts"] == {"keep": 0, "delete": 0}
+    client.post("/api/undo")
+    assert client.get("/api/meta").json()["counts"] == {"keep": 0, "delete": 5}
 
 
 def test_chunk_detail(client: TestClient):

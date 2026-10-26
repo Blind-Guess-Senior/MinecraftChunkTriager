@@ -82,10 +82,53 @@ command = ["java", "-jar", "mcaselector.jar"]
 [[layers]]
 name = "surface"
 title = "Surface"
-
-[export]
-buffer = 1
 """,
         encoding="utf-8",
     )
     return ws
+
+
+def pack(indices, bits: int):
+    """Pack palette indices into the long-array layout used since 1.16."""
+    per_long = 64 // bits
+    longs = []
+    for start in range(0, len(indices), per_long):
+        v = 0
+        for j, idx in enumerate(indices[start:start + per_long]):
+            v |= int(idx) << (j * bits)
+        longs.append(v - (1 << 64) if v >= 1 << 63 else v)
+    return nbtlib.LongArray(longs)
+
+
+def section_nbt(y: int, palette: list[str], indices=None, biome: str = "minecraft:plains"):
+    """A section compound; ``indices`` is 4096 palette indices in y/z/x order."""
+    from nbtlib import Byte, LongArray  # noqa: F401
+
+    states = {"palette": List[Compound]([Compound({"Name": String(n)}) for n in palette])}
+    if indices is not None and len(palette) > 1:
+        states["data"] = pack(indices, max(4, (len(palette) - 1).bit_length()))
+    return Compound({
+        "Y": nbtlib.Byte(y),
+        "block_states": Compound(states),
+        "biomes": Compound({"palette": List[String]([String(biome)])}),
+    })
+
+
+def full_chunk_nbt(cx: int, cz: int, sections, block_entities=(), structures=()) -> bytes:
+    root = nbtlib.File({
+        "DataVersion": Int(DATA_VERSION),
+        "xPos": Int(cx), "zPos": Int(cz), "yPos": Int(-4),
+        "Status": String("minecraft:full"),
+        "sections": List[Compound](sections),
+        "block_entities": List[Compound]([
+            Compound({"id": String(i), "x": Int(0), "y": Int(y), "z": Int(0), **extra})
+            for i, y, extra in block_entities
+        ]),
+        "structures": Compound({
+            "starts": Compound({}),
+            "References": Compound({s: nbtlib.LongArray([0]) for s in structures}),
+        }),
+    })
+    buf = io.BytesIO()
+    root.write(buf)
+    return buf.getvalue()

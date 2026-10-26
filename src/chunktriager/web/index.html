@@ -8,34 +8,64 @@
 </head>
 <body>
   <div id="map"></div>
+  <div id="mouse-badge"></div>
+  <div id="cursor"></div>
   <aside id="panel">
     <section>
-      <h2>标注</h2>
-      <div class="tools">
-        <button data-label="keep" class="keep">保留 <kbd>K</kbd></button>
-        <button data-label="delete" class="delete">删除 <kbd>D</kbd></button>
-        <button data-label="clear">清除 <kbd>C</kbd></button>
+      <h2>鼠标</h2>
+      <p class="muted">人工：区块本身有玩家建造的内容。建筑旁边的天然区块标自然，保护范围由模型阶段的规则计算。</p>
+      <div class="seg wide" id="scheme">
+        <button data-v="a">方案 1</button><button data-v="b">方案 2</button>
       </div>
-      <p class="hint">点击：标注单个区块。Shift + 拖动：标注矩形区域。<kbd>Ctrl+Z</kbd> 撤销。<kbd>G</kbd> 切换网格。</p>
+      <div class="binding"><span>左键</span><div class="seg" id="bind-left"></div></div>
+      <div class="binding"><span>右键</span><div class="seg" id="bind-right"></div></div>
+    </section>
+    <section>
+      <h2>操作</h2>
+      <table class="keys">
+        <tr><td>拖动</td><td>涂抹</td></tr>
+        <tr><td><kbd>Shift</kbd> + 拖动</td><td>矩形</td></tr>
+        <tr><td><kbd>Ctrl</kbd> + 拖动</td><td>整个 region</td></tr>
+        <tr><td>中键拖动</td><td>平移</td></tr>
+        <tr><td><kbd>Alt</kbd> + 点击</td><td>查看区块</td></tr>
+        <tr><td><kbd>Ctrl</kbd> + <kbd>Z</kbd></td><td>撤销</td></tr>
+      </table>
+      <p class="muted">缩小到看不清区块时，标注自动以 region 为单位。</p>
+    </section>
+    <section>
+      <h2>显示</h2>
+      <div id="layers"></div>
+      <label><input type="checkbox" id="only-labeled"> 只显示已标注区块</label>
+      <label><input type="checkbox" id="grid" checked> 网格 <kbd>G</kbd></label>
+      <label>标注不透明度 <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.45"></label>
+    </section>
+    <section id="model">
+      <h2>模型</h2>
+      <div id="model-none" class="muted">还没有预测结果。运行 <code>chunktriager train</code> 和 <code>chunktriager predict</code> 后刷新。</div>
+      <div id="model-body" hidden>
+        <div class="seg wide" id="view">
+          <button data-v="labels">标注</button><button data-v="prob">模型概率</button><button data-v="protect">保护范围</button>
+        </div>
+        <div id="legend"></div>
+        <div id="model-info" class="muted"></div>
+        <div class="seg wide" id="review-kind">
+          <button data-v="missed">漏判的人工区块</button><button data-v="flagged">未标注但判为人工</button>
+        </div>
+        <ol id="review"></ol>
+      </div>
+    </section>
+    <section>
+      <h2>进度</h2>
       <div id="counts"></div>
     </section>
     <section>
-      <h2>底图</h2>
-      <div id="layers"></div>
-      <label>标注透明度 <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.45"></label>
-    </section>
-    <section id="detail">
       <h2>区块</h2>
-      <div id="detail-body" class="muted">悬停或点击一个区块</div>
+      <div id="detail-body" class="muted">Alt + 点击查看区块</div>
     </section>
     <section>
-      <h2>导出</h2>
-      <div id="export-preview" class="muted"></div>
-      <button id="export">导出删除选区</button>
-      <div id="export-result"></div>
+      <button id="clear-all" class="danger">清除所有标注</button>
     </section>
   </aside>
-  <div id="cursor"></div>
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="app.js"></script>
 </body>

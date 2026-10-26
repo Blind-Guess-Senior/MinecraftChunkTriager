@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import nbtlib
+import numpy as np
 
 
 class UnsupportedChunkError(Exception):
@@ -27,6 +28,46 @@ class ChunkInfo:
     block_entities: tuple[BlockEntity, ...] = field(default=())
 
 
+# Version-neutral chunk content consumed by feature extraction. Profiles
+# translate their NBT layout into these types.
+
+@dataclass(frozen=True)
+class Section:
+    y: int                       # section index; blocks span y*16 .. y*16+15
+    palette: list[str]
+    blocks: np.ndarray           # (16, 16, 16) palette indices, y/z/x order
+    biome_palette: list[str]
+    biomes: np.ndarray           # (4, 4, 4) palette indices, y/z/x order
+
+
+@dataclass(frozen=True)
+class BlockEntityData:
+    id: str
+    y: int
+    has_loot_table: bool         # unopened structure loot
+    has_items: bool
+
+
+@dataclass(frozen=True)
+class EntityData:
+    id: str
+    x: float
+    y: float
+    z: float
+    named: bool
+    leashed: bool
+
+
+@dataclass(frozen=True)
+class ChunkData:
+    x: int
+    z: int
+    full: bool                   # generation finished
+    sections: list[Section]
+    block_entities: list[BlockEntityData]
+    structures: frozenset[str]   # structures with a start or reference here
+
+
 class VersionProfile(ABC):
     #: Value used for ``game_version`` in the workspace config.
     name: str
@@ -41,6 +82,17 @@ class VersionProfile(ABC):
     def dimension_dir(self, world: Path, dimension: str) -> Path:
         """Folder holding ``region``/``entities``/``poi`` for a dimension."""
 
+    #: Name of the id vocabulary file in ``versions/data``.
+    vocabulary: str
+
     @abstractmethod
     def parse_chunk(self, root: nbtlib.Compound) -> ChunkInfo:
         """Extract the fields the tool uses from a chunk's root compound."""
+
+    @abstractmethod
+    def read_chunk(self, root: nbtlib.Compound) -> ChunkData:
+        """Decode a region-file chunk into version-neutral content."""
+
+    @abstractmethod
+    def read_entities(self, root: nbtlib.Compound) -> list[EntityData]:
+        """Decode an entities-file chunk."""

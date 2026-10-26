@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from chunktriager.export import dilate, plan_export, write_selection_csv
+from chunktriager.export import write_selection_csv
 from chunktriager.store import Store, StoreError
 
 DIM = "minecraft:overworld"
@@ -44,32 +44,20 @@ def test_invalid_label_rejected(store: Store):
         store.set_labels(DIM, [(0, 0)], "maybe", "single")
 
 
-def test_dilate_is_chebyshev():
-    assert dilate([(0, 0)], 1) == {(x, z) for x in (-1, 0, 1) for z in (-1, 0, 1)}
-
-
-def test_plan_export_buffer_and_unlabeled():
-    chunks = {(x, 0) for x in range(6)}
-    labels = {(0, 0): "keep", (1, 0): "delete", (2, 0): "delete", (3, 0): "delete"}
-    plan = plan_export(chunks, labels, buffer=1)
-    # (1,0) is next to a kept chunk; (4,0) and (5,0) are unlabeled.
-    assert plan.delete == [(2, 0), (3, 0)]
-    assert (plan.kept_by_label, plan.kept_by_buffer, plan.kept_unlabeled) == (1, 1, 2)
-
-
-def test_plan_export_delete_unlabeled_still_respects_buffer():
-    chunks = {(x, 0) for x in range(4)}
-    plan = plan_export(chunks, {(0, 0): "keep"}, buffer=1, delete_unlabeled=True)
-    assert plan.delete == [(2, 0), (3, 0)]
-
-
-def test_plan_export_ignores_labels_outside_index():
-    plan = plan_export({(0, 0)}, {(0, 0): "delete", (9, 9): "keep"}, buffer=0)
-    assert plan.delete == [(0, 0)]
-    assert plan.kept_by_label == 0
-
-
 def test_selection_csv_matches_mcaselector_format(tmp_path: Path):
     path = tmp_path / "out.csv"
     write_selection_csv(path, [(0, 0), (-1, 0), (-33, 31), (32, -1)])
     assert path.read_bytes() == b"0;0;0;0\n-1;0;-1;0\n-2;0;-33;31\n1;-1;32;-1\n"
+
+
+def test_concurrent_access_from_threads(store: Store):
+    # The server shares one Store across its thread pool.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def work(i: int):
+        store.set_labels(DIM, [(i % 5, i // 5 % 5)], "keep" if i % 2 else "delete", "single")
+        return len(store.labels(DIM, (0, 0, 4, 4)))
+
+    with ThreadPoolExecutor(16) as pool:
+        results = list(pool.map(work, range(400)))
+    assert all(0 < n <= 25 for n in results)

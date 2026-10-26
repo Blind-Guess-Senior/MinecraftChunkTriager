@@ -1,13 +1,16 @@
 """SQLite storage for the chunk index and labels.
 
-A label is a final decision, either ``keep`` or ``delete``. Chunks without
-a label are simply not decided yet. Every change is appended to
+A label says whether the chunk itself contains player-made content:
+``keep`` = player-made, ``delete`` = natural (names kept for storage
+compatibility). Chunks without a label are not decided yet. Every change is appended to
 ``label_log`` grouped by batch, which backs undo.
 """
 
 from __future__ import annotations
 
+import functools
 import sqlite3
+import threading
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -51,15 +54,28 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _locked(method):
+    # The server calls the store from a thread pool, and a sqlite3 connection
+    # must not be used by two threads at once.
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class Store:
     def __init__(self, path: Path):
         self.conn = connect(path)
+        self._lock = threading.RLock()
 
+    @_locked
     def close(self) -> None:
         self.conn.close()
 
     # chunk index -----------------------------------------------------------
 
+    @_locked
     def replace_chunks(self, dim: str, positions: Iterable[tuple[int, int]]) -> int:
         with self.conn:
             self.conn.execute("DELETE FROM chunks WHERE dim = ?", (dim,))
@@ -69,10 +85,12 @@ class Store:
             )
         return cur.rowcount
 
+    @_locked
     def chunks(self, dim: str) -> set[tuple[int, int]]:
         rows = self.conn.execute("SELECT x, z FROM chunks WHERE dim = ?", (dim,))
         return {(x, z) for x, z in rows}
 
+    @_locked
     def chunk_exists(self, dim: str, x: int, z: int) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM chunks WHERE dim = ? AND x = ? AND z = ?", (dim, x, z)
@@ -81,6 +99,7 @@ class Store:
 
     # labels ----------------------------------------------------------------
 
+    @_locked
     def labels(
         self, dim: str, bbox: tuple[int, int, int, int] | None = None
     ) -> dict[tuple[int, int], tuple[str, str]]:
@@ -92,6 +111,7 @@ class Store:
             params += [bbox[0], bbox[2], bbox[1], bbox[3]]
         return {(x, z): (label, source) for x, z, label, source in self.conn.execute(sql, params)}
 
+    @_locked
     def label_counts(self, dim: str) -> dict[str, int]:
         counts = dict.fromkeys(LABELS, 0)
         rows = self.conn.execute(
@@ -100,6 +120,7 @@ class Store:
         counts.update(dict(rows))
         return counts
 
+    @_locked
     def set_labels(
         self,
         dim: str,
@@ -141,6 +162,13 @@ class Store:
                 changed += 1
         return changed
 
+    @_locked
+    def clear_labels(self, dim: str) -> int:
+        """Remove every label for ``dim`` as one undoable batch."""
+        current = self.labels(dim)
+        return self.set_labels(dim, current.keys(), None, "area", known=set(current))
+
+    @_locked
     def undo(self, dim: str) -> int:
         """Revert the most recent batch for ``dim``; returns chunks reverted."""
         row = self.conn.execute(
@@ -175,3 +203,15 @@ class Store:
                 " source = excluded.source, updated_at = excluded.updated_at",
                 (dim, x, z, value[0], value[1], now),
             )
+
+
+def read_labels(path: Path, dim: str) -> dict[tuple[int, int], str]:
+    """``{(x, z): label}`` read without write access, safe while the server runs."""
+    if not path.is_file():
+        return {}
+    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    try:
+        return {(x, z): label for x, z, label in
+                conn.execute("SELECT x, z, label FROM labels WHERE dim = ?", (dim,))}
+    finally:
+        conn.close()

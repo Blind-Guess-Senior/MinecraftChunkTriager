@@ -11,8 +11,8 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import export as export_mod
 from .config import Config
+from .model.predict import FILE, load_predictions
 from .render import tile_path
 from .store import Store
 from .versions import UnsupportedChunkError, VersionProfile
@@ -45,6 +45,48 @@ def _region_state(chunks: set[tuple[int, int]], labels: dict, rx: int, rz: int) 
     return "".join(out)
 
 
+class _PredictionCache:
+    """Predictions file, reloaded when ``chunktriager predict`` rewrites it."""
+
+    def __init__(self, workspace: Path):
+        self.path = workspace / FILE
+        self.workspace = workspace
+        self.mtime = None
+        self.p = None
+        self.by_region: dict[tuple[int, int], tuple[bytearray, bytearray]] = {}
+
+    def get(self):
+        m = self.path.stat().st_mtime if self.path.is_file() else None
+        if m != self.mtime:
+            self.mtime = m
+            self.p = load_predictions(self.workspace) if m else None
+            self.by_region = {}
+            if self.p is not None:
+                for (x, z), prob, prot in zip(self.p.positions.tolist(), self.p.prob.tolist(),
+                                              self.p.protected.tolist()):
+                    key = (x // REGION_CHUNKS, z // REGION_CHUNKS)
+                    if key not in self.by_region:
+                        self.by_region[key] = (bytearray(REGION_CHUNKS ** 2), bytearray(b"." * REGION_CHUNKS ** 2))
+                    i = (z % REGION_CHUNKS) * REGION_CHUNKS + x % REGION_CHUNKS
+                    self.by_region[key][0][i] = min(255, round(prob * 255))
+                    self.by_region[key][1][i] = ord("p" if prot else "-")
+        return self.p
+
+    def summary(self) -> dict | None:
+        p = self.get()
+        if p is None:
+            return None
+        m = p.meta
+        return {"threshold": m["protection"]["threshold"], "flagged": m["flagged"],
+                "protected": m["protected"], "chunks": m["chunks"],
+                "trained_at": m["model"]["trained_at"]}
+
+    def regions(self, rx0, rz0, rx1, rz1) -> dict:
+        self.get()
+        return {f"{rx},{rz}": {"prob": v[0].hex(), "protected": v[1].decode()}
+                for (rx, rz), v in self.by_region.items() if rx0 <= rx <= rx1 and rz0 <= rz <= rz1}
+
+
 def create_app(cfg: Config, profile: VersionProfile, dimension_dir: Path) -> FastAPI:
     store = Store(cfg.db_path)
     dim = cfg.dimension
@@ -54,6 +96,7 @@ def create_app(cfg: Config, profile: VersionProfile, dimension_dir: Path) -> Fas
     chunks = store.chunks(dim)
     present = {(x // REGION_CHUNKS, z // REGION_CHUNKS) for x, z in chunks}
     app = FastAPI(title="chunktriager")
+    preds = _PredictionCache(cfg.workspace)
 
     @app.get("/api/meta")
     def meta() -> dict:
@@ -71,7 +114,36 @@ def create_app(cfg: Config, profile: VersionProfile, dimension_dir: Path) -> Fas
             "regions": regions,
             "chunk_count": len(chunks),
             "counts": store.label_counts(dim),
+            "predictions": preds.summary(),
         }
+
+    @app.get("/api/predictions")
+    def predictions(rx0: int, rz0: int, rx1: int, rz1: int) -> dict:
+        """Per region: 1024 probability bytes (0-255, hex) and a protection string."""
+        if (rx1 - rx0 + 1) * (rz1 - rz0 + 1) > 4096:
+            raise HTTPException(400, "region range too large")
+        return preds.regions(rx0, rz0, rx1, rz1)
+
+    @app.get("/api/review")
+    def review(kind: str, limit: int = 200) -> list:
+        """Chunks where the model and the labels disagree, worst first.
+
+        ``missed``: labelled player-made, low probability, not protected.
+        ``flagged``: not labelled player-made, probability at or above the threshold.
+        """
+        p = preds.get()
+        if p is None:
+            return []
+        labels = store.labels(dim)
+        rows = []
+        for (x, z), prob, prot in zip(map(tuple, p.positions.tolist()), p.prob.tolist(), p.protected.tolist()):
+            human = labels.get((x, z), (None,))[0] == "keep"
+            if kind == "missed" and human and not prot:
+                rows.append((prob, x, z))
+            elif kind == "flagged" and not human and prob >= p.meta["protection"]["threshold"]:
+                rows.append((-prob, x, z))
+        rows.sort()
+        return [{"x": x, "z": z, "prob": abs(v)} for v, x, z in rows[:limit]]
 
     @app.get("/api/state")
     def state(rx0: int, rz0: int, rx1: int, rz1: int) -> dict:
@@ -123,29 +195,13 @@ def create_app(cfg: Config, profile: VersionProfile, dimension_dir: Path) -> Fas
         changed = store.set_labels(dim, positions, req.label, req.source, known=chunks)
         return {"changed": changed, "counts": store.label_counts(dim)}
 
+    @app.post("/api/labels/clear")
+    def clear_labels() -> dict:
+        return {"changed": store.clear_labels(dim), "counts": store.label_counts(dim)}
+
     @app.post("/api/undo")
     def undo() -> dict:
         return {"reverted": store.undo(dim), "counts": store.label_counts(dim)}
-
-    @app.get("/api/export/preview")
-    def export_preview() -> dict:
-        plan = _plan()
-        return {
-            "delete": len(plan.delete),
-            "kept_by_label": plan.kept_by_label,
-            "kept_by_buffer": plan.kept_by_buffer,
-            "kept_unlabeled": plan.kept_unlabeled,
-            "buffer": cfg.export.buffer,
-        }
-
-    @app.post("/api/export")
-    def export() -> dict:
-        path = export_mod.export_delete_selection(cfg, store)
-        return {"path": str(path), "delete": len(_plan().delete)}
-
-    def _plan() -> export_mod.ExportPlan:
-        labels = {p: v[0] for p, v in store.labels(dim).items()}
-        return export_mod.plan_export(chunks, labels, cfg.export.buffer, cfg.export.delete_unlabeled)
 
     @app.get("/tiles/{layer}/{z}/{x}/{y}.png")
     def tile(layer: str, z: int, x: int, y: int) -> Response:

@@ -43,12 +43,26 @@ class ServerConfig:
     port: int = 8765
 
 
+RAILS = ("minecraft:rail", "minecraft:powered_rail", "minecraft:detector_rail", "minecraft:activator_rail")
+
+
 @dataclass(frozen=True)
-class ExportConfig:
-    # Kept chunks are dilated by this many chunks (Chebyshev) before export.
-    buffer: int = 1
-    # Unlabeled chunks are treated as keep unless this is set.
-    delete_unlabeled: bool = False
+class TrainingConfig:
+    # "natural": unlabeled chunks count as natural; label only player-made
+    # chunks. "ignore": train only on explicitly labeled chunks.
+    unlabeled: str = "natural"
+    folds: int = 5
+
+
+@dataclass(frozen=True)
+class ProtectionConfig:
+    # A chunk is protected if a chunk within `radius` (Chebyshev, in chunks)
+    # scores at least `threshold`. Evidence that comes only from
+    # `short_radius_blocks` (e.g. a lone rail line) protects `short_radius`.
+    radius: int = 8
+    short_radius: int = 1
+    short_radius_blocks: tuple[str, ...] = RAILS
+    threshold: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -60,11 +74,16 @@ class Config:
     mcaselector: McaSelectorConfig
     layers: tuple[RenderLayer, ...]
     server: ServerConfig
-    export: ExportConfig
+    training: TrainingConfig
+    protection: ProtectionConfig
 
     @property
     def db_path(self) -> Path:
         return self.workspace / "labels.sqlite3"
+
+    @property
+    def models_dir(self) -> Path:
+        return self.workspace / "models"
 
     @property
     def tiles_dir(self) -> Path:
@@ -121,7 +140,10 @@ def load_config(workspace: Path) -> Config:
         raise ConfigError("layer names must be unique")
 
     server = raw.get("server", {})
-    export = raw.get("export", {})
+    training = raw.get("training", {})
+    if training.get("unlabeled", "natural") not in ("ignore", "natural"):
+        raise ConfigError('training.unlabeled must be "ignore" or "natural"')
+    prot = raw.get("protection", {})
     return Config(
         workspace=workspace,
         world=world,
@@ -137,8 +159,15 @@ def load_config(workspace: Path) -> Config:
             host=server.get("host", "127.0.0.1"),
             port=int(server.get("port", 8765)),
         ),
-        export=ExportConfig(
-            buffer=int(export.get("buffer", 1)),
-            delete_unlabeled=bool(export.get("delete_unlabeled", False)),
+        training=TrainingConfig(
+            unlabeled=training.get("unlabeled", "natural"),
+            folds=int(training.get("folds", 5)),
+        ),
+        protection=ProtectionConfig(
+            radius=int(prot.get("radius", 8)),
+            short_radius=int(prot.get("short_radius", 1)),
+            short_radius_blocks=_str_tuple(prot.get("short_radius_blocks", list(RAILS)),
+                                           "protection.short_radius_blocks"),
+            threshold=float(prot.get("threshold", 0.01)),
         ),
     )

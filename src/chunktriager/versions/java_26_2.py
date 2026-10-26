@@ -11,13 +11,24 @@ from pathlib import Path
 
 import nbtlib
 
-from .base import BlockEntity, ChunkInfo, UnsupportedChunkError, VersionProfile
+from ..features.decode import biome_indices, block_indices
+from .base import (
+    BlockEntity,
+    BlockEntityData,
+    ChunkData,
+    ChunkInfo,
+    EntityData,
+    Section,
+    UnsupportedChunkError,
+    VersionProfile,
+)
 
 
 class Java26_2(VersionProfile):
     name = "java-26.2"
     data_version_min = 4883
     data_version_max = 4998
+    vocabulary = "java-26.2"
 
     def dimension_dir(self, world: Path, dimension: str) -> Path:
         namespace, sep, path = dimension.partition(":")
@@ -42,6 +53,45 @@ class Java26_2(VersionProfile):
             for be in root.get("block_entities", [])
         )
         return ChunkInfo(x, z, data_version, entities)
+
+
+    def read_chunk(self, root: nbtlib.Compound) -> ChunkData:
+        info = self.parse_chunk(root)        # validates DataVersion
+        sections = []
+        for sec in root.get("sections", []):
+            if "block_states" not in sec or "biomes" not in sec:
+                continue
+            palette, blocks = block_indices(sec["block_states"])
+            biome_palette, biomes = biome_indices(sec["biomes"])
+            sections.append(Section(int(sec["Y"]), palette, blocks, biome_palette, biomes))
+        block_entities = [
+            BlockEntityData(
+                str(be["id"]), int(be["y"]),
+                has_loot_table="LootTable" in be,
+                has_items=len(be.get("Items", [])) > 0,
+            )
+            for be in root.get("block_entities", [])
+        ]
+        structures = root.get("structures", {})
+        names = set(structures.get("starts", {}).keys()) | set(structures.get("References", {}).keys())
+        return ChunkData(
+            info.x, info.z,
+            full=str(root.get("Status", "")) == "minecraft:full",
+            sections=sorted(sections, key=lambda s: s.y),
+            block_entities=block_entities,
+            structures=frozenset(names),
+        )
+
+    def read_entities(self, root: nbtlib.Compound) -> list[EntityData]:
+        result = []
+        for e in root.get("Entities", []):
+            pos = e.get("Pos", [0.0, 0.0, 0.0])
+            result.append(EntityData(
+                str(e["id"]), float(pos[0]), float(pos[1]), float(pos[2]),
+                named="CustomName" in e,
+                leashed="leash" in e or "Leash" in e,
+            ))
+        return result
 
 
 PROFILE = Java26_2()

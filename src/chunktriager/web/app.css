@@ -1,25 +1,61 @@
 html, body { margin: 0; height: 100%; font: 13px/1.45 system-ui, sans-serif; color: #ddd; background: #111; }
-#map { position: absolute; inset: 0 320px 0 0; background: #000; }
-#panel { position: absolute; top: 0; right: 0; bottom: 0; width: 320px; overflow-y: auto;
-  box-sizing: border-box; padding: 8px 12px; background: #1b1b1b; border-left: 1px solid #333; }
-h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #888; margin: 14px 0 6px; }
-section:first-child h2 { margin-top: 4px; }
-button { font: inherit; color: #ddd; background: #2a2a2a; border: 1px solid #444; border-radius: 3px;
-  padding: 4px 8px; cursor: pointer; }
+#map { position: absolute; inset: 0 300px 0 0; background: #000; cursor: crosshair; }
+#map.panning { cursor: grabbing; }
+.leaflet-container { background: #000; }
+#panel { position: absolute; top: 0; right: 0; bottom: 0; width: 300px; overflow-y: auto;
+  box-sizing: border-box; padding: 4px 14px 14px; background: #1b1b1b; border-left: 1px solid #333; }
+section { padding: 10px 0; border-bottom: 1px solid #2a2a2a; }
+section:last-child { border-bottom: 0; }
+h2 { font-size: 11px; font-weight: 600; letter-spacing: .06em; color: #888; margin: 0 0 8px; }
+.muted { color: #888; }
+kbd { font: 11px ui-monospace, monospace; padding: 0 4px; border: 1px solid #555; border-radius: 3px; background: #262626; }
+label { display: block; margin: 5px 0; }
+button { font: inherit; color: #ddd; background: #2a2a2a; border: 1px solid #444; border-radius: 4px;
+  padding: 4px 10px; cursor: pointer; }
 button:hover { background: #333; }
-button.active { outline: 2px solid #fff; }
-button.keep { border-color: #2e8b57; }
-button.delete { border-color: #c0392b; }
-.tools { display: flex; gap: 6px; }
-kbd { font-size: 11px; color: #999; }
-.hint, .muted { color: #888; }
-#layers label { display: block; }
-#counts span { display: inline-block; margin-right: 10px; }
+button.danger { width: 100%; color: #e88; border-color: #6b2b2b; }
+button.danger:hover { background: #3a1f1f; }
+
+/* Segmented control: exactly one option is lit. */
+.seg { display: inline-flex; border: 1px solid #444; border-radius: 4px; overflow: hidden; }
+.seg.wide { display: flex; margin-bottom: 8px; }
+.seg.wide button { flex: 1; }
+.seg button { border: 0; border-radius: 0; background: #222; color: #999; }
+.seg button + button { border-left: 1px solid #444; }
+.seg button.on { background: #3d5a80; color: #fff; }
+.seg button:disabled { cursor: default; }
+.seg button.on.keep { background: #2e8b57; }
+.seg button.on.delete { background: #c0392b; }
+.seg button.on.clear { background: #666; }
+.binding { display: flex; align-items: center; gap: 10px; margin: 5px 0; }
+.binding > span { width: 32px; color: #aaa; }
+
+.keys { border-collapse: collapse; width: 100%; }
+.keys td { padding: 2px 0; }
+.keys td:last-child { color: #aaa; text-align: right; }
+#counts { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+#counts .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
 #detail-body table { border-collapse: collapse; width: 100%; }
 #detail-body td { padding: 1px 4px; border-bottom: 1px solid #2a2a2a; }
 #detail-body td:last-child { text-align: right; }
 #detail-body code { user-select: all; background: #000; padding: 1px 4px; }
+
+/* Always-visible reminder of what the buttons do, at the top of the map. */
+#mouse-badge { position: absolute; top: 8px; left: 50px; z-index: 1000; pointer-events: none;
+  display: flex; gap: 6px; }
+#mouse-badge span { padding: 3px 8px; border-radius: 4px; background: rgba(0,0,0,.75); }
+#mouse-badge .keep { box-shadow: inset 3px 0 #2ecc71; }
+#mouse-badge .delete { box-shadow: inset 3px 0 #e74c3c; }
+#mouse-badge .clear { box-shadow: inset 3px 0 #aaa; }
 #cursor { position: absolute; left: 8px; bottom: 8px; padding: 2px 6px; background: rgba(0,0,0,.7);
   pointer-events: none; z-index: 1000; }
-.leaflet-container { background: #000; }
-.box-select { border: 1px dashed #fff; background: rgba(255,255,255,.12); }
+
+#legend { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 6px 0; }
+#legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+#legend .ramp { display: inline-block; width: 60px; height: 10px; border-radius: 2px;
+  background: linear-gradient(90deg, rgb(255,220,0), rgb(255,0,0)); }
+#review { max-height: 220px; overflow-y: auto; margin: 6px 0 0; padding-left: 28px; }
+#review li { cursor: pointer; padding: 1px 0; }
+#review li:hover { color: #fff; }
+#review li span { color: #888; margin-left: 6px; }
+code { font: 12px ui-monospace, monospace; }
