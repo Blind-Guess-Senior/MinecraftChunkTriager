@@ -628,6 +628,48 @@ document.getElementById("accept").addEventListener("click", async () => {
   await labels.reload();
 });
 
+// Navigation -----------------------------------------------------------------
+
+// Median of the region coordinates: a few far-away regions (e.g. chunks
+// loaded near the world border) do not pull it off the main area the way
+// the bounding-box centre does.
+function homeBlock(regions) {
+  const median = (v) => { const s = [...v].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+  return [(median(regions.map((r) => r[0])) + 0.5) * 512, (median(regions.map((r) => r[1])) + 0.5) * 512];
+}
+
+let gotoMarker = null;
+
+function goTo(bx, bz, mark) {
+  map.setView(toLatLng(bx, bz), Math.max(Math.round(map.getZoom()), CHUNK_MODE_MIN_ZOOM));
+  if (gotoMarker) { map.removeLayer(gotoMarker); gotoMarker = null; }
+  if (mark) gotoMarker = L.circleMarker(toLatLng(bx + 0.5, bz + 0.5),
+    { radius: 6, color: "#fff", weight: 2, fillColor: "#e33", fillOpacity: 1 }).addTo(map);
+}
+
+// Accepts "x z", "x, z" or a pasted "/tp @s x y z" (the y is skipped; ~ counts as a gap).
+function parseTarget(text) {
+  const nums = text.replace(/~[-\d.]*/g, " ~ ").match(/~|-?\d+(\.\d+)?/g) || [];
+  if (nums.length === 2 && !nums.includes("~")) return nums.map(Number);
+  if (nums.length === 3 && nums[0] !== "~" && nums[2] !== "~") return [Number(nums[0]), Number(nums[2])];
+  return null;
+}
+
+function setupNavigation(meta) {
+  const input = document.getElementById("goto");
+  const go = () => {
+    const t = parseTarget(input.value);
+    input.classList.toggle("bad", !t);
+    if (t) goTo(Math.floor(t[0]), Math.floor(t[1]), true);
+  };
+  document.getElementById("goto-btn").addEventListener("click", go);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  input.addEventListener("input", () => input.classList.remove("bad"));
+  const home = meta.regions.length ? homeBlock(meta.regions) : [0, 0];
+  document.getElementById("home").addEventListener("click", () => goTo(home[0], home[1], false));
+  return home;
+}
+
 function setupModel(summary) {
   state.hasPreds = !!summary;
   document.getElementById("model-none").hidden = state.hasPreds;
@@ -662,18 +704,11 @@ async function init() {
   map.setMaxZoom(MAX_ZOOM);
 
   // Restore the last view; otherwise start at a chunk-readable zoom on the
-  // center of the explored area.
+  // main area of the world.
+  const home = setupNavigation(meta);
   const saved = JSON.parse(localStorage.getItem(viewKey) || "null");
-  if (saved) {
-    map.setView([saved.lat, saved.lng], saved.zoom);
-  } else if (meta.regions.length) {
-    const xs = meta.regions.map((r) => r[0]), zs = meta.regions.map((r) => r[1]);
-    const cx = (Math.min(...xs) + Math.max(...xs) + 1) / 2 * 512;
-    const cz = (Math.min(...zs) + Math.max(...zs) + 1) / 2 * 512;
-    map.setView(toLatLng(cx, cz), START_ZOOM);
-  } else {
-    map.setView([0, 0], START_ZOOM);
-  }
+  if (saved) map.setView([saved.lat, saved.lng], saved.zoom);
+  else map.setView(toLatLng(home[0], home[1]), START_ZOOM);
   setupProposals(meta.proposals);
   setupModel(meta.predictions);
   renderView();

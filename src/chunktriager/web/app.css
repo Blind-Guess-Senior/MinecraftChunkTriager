@@ -14,6 +14,12 @@ button { font: inherit; color: #ddd; background: #2a2a2a; border: 1px solid #444
   padding: 4px 10px; cursor: pointer; }
 button:hover { background: #333; }
 button.wide { width: 100%; margin-top: 4px; }
+.row { display: flex; gap: 6px; }
+.row input { flex: 1; min-width: 0; }
+input:not([type]) { font: inherit; color: #ddd; background: #111; border: 1px solid #444; border-radius: 4px;
+  padding: 4px 6px; }
+input:not([type]):focus { outline: none; border-color: #3d5a80; }
+input.bad { border-color: #c0392b; }
 button:disabled { color: #666; cursor: default; background: #222; }
 button.danger { width: 100%; color: #e88; border-color: #6b2b2b; }
 button.danger:hover { background: #3a1f1f; }

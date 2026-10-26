@@ -33,6 +33,14 @@
       <p class="muted">缩小到看不清区块时，标注自动以 region 为单位。</p>
     </section>
     <section>
+      <h2>定位</h2>
+      <div class="row">
+        <input id="goto" placeholder="方块坐标 x z，或粘贴 /tp 命令">
+        <button id="goto-btn">跳转</button>
+      </div>
+      <button id="home" class="wide">回到存档主体区域</button>
+    </section>
+    <section>
       <h2>显示</h2>
       <div id="layers"></div>
       <label><input type="checkbox" id="only-labeled"> 只显示已标注区块</label>
