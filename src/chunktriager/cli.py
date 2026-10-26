@@ -1,8 +1,8 @@
-"""Command line entry point: ``chunktriager [-c config] <command>``.
+"""Command line entry point: ``chunktriager [-w workdir] <command>``.
 
-Every command reads one configuration file (``-c``, default
-``chunktriager.toml`` in the current directory) that lists the worlds and
-their roles; see :mod:`chunktriager.config`.
+Every command works in one working directory (``-w``, default the current
+directory) whose ``chunktriager.toml`` lists the worlds and their roles;
+see :mod:`chunktriager.config`.
 """
 
 from __future__ import annotations
@@ -12,20 +12,19 @@ import json
 import sys
 from pathlib import Path
 
-from .config import CONFIG_NAME, Config, ConfigError, World, default_config_path, load_config
+from .config import CONFIG_NAME, Config, ConfigError, World, load_config
 from .render import RenderError, render_layer
 from .store import Store
 from .versions import UnknownVersionError, get_profile, supported_versions
 from .worldio import list_regions
 
 _TEMPLATE = """\
-# chunktriager configuration. Relative paths are relative to this file.
+# chunktriager working directory. Relative paths are relative to this folder.
+# Commands write labels/ (your labels; back these up), cache/ (rebuildable)
+# and models/ next to this file.
 
-# Labels, per-world caches and models are stored here. Labels are the only
-# part that cannot be rebuilt.
-data_dir = "data"
-# Model written by `train` and read by `predict` (default: <data_dir>/models/current).
-# model = "data/models/current"
+# Model written by `train` and read by `predict` (default: models/current).
+# model = "models/current"
 
 # One of: {versions}
 game_version = "java-26.2"
@@ -88,7 +87,7 @@ def _relative(path: Path, base: Path) -> str:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    path: Path = args.config
+    path: Path = args.workdir / CONFIG_NAME
     if path.exists():
         print(f"{path} already exists; not overwriting", file=sys.stderr)
         return 1
@@ -103,7 +102,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         worlds="\n".join(entries) if entries else _EXAMPLE_WORLD,
     ), encoding="utf-8")
     print(f"wrote {path} with {len(entries)} worlds")
-    print("set each world's role, then run `chunktriager prepare`")
+    print(f"set each world's role, then run `chunktriager -w {args.workdir} prepare`")
     return 0
 
 
@@ -149,7 +148,7 @@ def _model_dir(cfg: Config, override: Path | None) -> Path:
 def cmd_worlds(args: argparse.Namespace) -> int:
     from .store import read_labels
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.workdir)
     profile = get_profile(cfg.game_version)
     if not cfg.worlds:
         print(f"no worlds in {cfg.path}")
@@ -171,7 +170,7 @@ def cmd_worlds(args: argparse.Namespace) -> int:
 def cmd_prepare(args: argparse.Namespace) -> int:
     from .features.pipeline import extract_dimension
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.workdir)
     worlds = cfg.select(args.worlds)
     if not worlds:
         raise ConfigError(f"no worlds in {cfg.path}")
@@ -206,7 +205,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
 
 
 def cmd_render(args: argparse.Namespace) -> int:
-    cfg = load_config(args.config)
+    cfg = load_config(args.workdir)
     if cfg.mcaselector is None:
         raise ConfigError(f"set [mcaselector] command in {cfg.path} to render base maps")
     names = args.layer or [layer.name for layer in cfg.layers]
@@ -232,7 +231,7 @@ def cmd_label(args: argparse.Namespace) -> int:
 
     from .server import create_app
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.workdir)
     world = cfg.world(args.world)
     profile = get_profile(cfg.game_version)
     app = create_app(cfg, world, profile, _dimension_dir(cfg, world), _features_dir(cfg, world))
@@ -245,7 +244,7 @@ def cmd_label(args: argparse.Namespace) -> int:
 def cmd_train(args: argparse.Namespace) -> int:
     from .model.train import train_worlds
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.workdir)
     selected = cfg.select(roles=("train",))
     if not selected:
         raise ConfigError(f"no worlds with role = \"train\" in {cfg.path}")
@@ -264,7 +263,7 @@ def cmd_train(args: argparse.Namespace) -> int:
 def cmd_evaluate(args: argparse.Namespace) -> int:
     from .model.evaluate import report_grouped_cv, report_held_out
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.workdir)
     train = cfg.select(roles=("train",))
     held = cfg.select(roles=("val", "test") if args.test else ("val",))
     if not train:
@@ -282,7 +281,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
     from .model.predict import predict_world, save_predictions
     from .model.train import ModelBundle
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.workdir)
     model_dir = _model_dir(cfg, args.model)
     if not (model_dir / "meta.json").is_file():
         raise ConfigError(f"no model at {model_dir}; run `chunktriager train` or pass --model")
@@ -301,11 +300,11 @@ def cmd_predict(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chunktriager")
-    parser.add_argument("-c", "--config", type=Path, default=None,
-                        help=f"configuration file (default: ./{CONFIG_NAME})")
+    parser.add_argument("-w", "--workdir", type=Path, default=Path("."),
+                        help=f"working directory holding {CONFIG_NAME} (default: current directory)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("init", help="write a configuration template")
+    p = sub.add_parser("init", help=f"create a working directory with a {CONFIG_NAME} template")
     p.add_argument("--worlds", type=Path, action="append",
                    help="add every save in this folder as a world (repeatable)")
     p.set_defaults(func=cmd_init)
@@ -342,7 +341,6 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_predict)
 
     args = parser.parse_args(argv)
-    args.config = args.config or default_config_path()
     try:
         return args.func(args)
     except (ConfigError, UnknownVersionError, RenderError) as e:

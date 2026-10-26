@@ -1,6 +1,6 @@
 """Cross-world experiment: train on the main world, test on an all-natural world.
 
-Usage: uv run python scripts/experiment_cross_world.py <config> <main world> <natural world>
+Usage: uv run python scripts/experiment_cross_world.py <working directory> <main world> <natural world>
 
 Experimental code: rarity features here are not yet part of the feature schema.
 """

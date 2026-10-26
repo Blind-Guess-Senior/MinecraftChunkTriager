@@ -25,14 +25,14 @@ def make_client(config: Path, name: str = "w") -> TestClient:
 
 @pytest.fixture
 def client(config: Path) -> TestClient:
-    assert main(["-c", str(config), "prepare", "--workers", "1"]) == 0
+    assert main(["-w", str(config), "prepare", "--workers", "1"]) == 0
     return make_client(config)
 
 
 def test_prepare_skips_unupgraded_chunks(config: Path, world: Path, capsys):
     region = world / "dimensions/minecraft/overworld/region/r.1.0.mca"
     write_region(region, {(32, 0): chunk_nbt(32, 0, data_version=3700)})
-    assert main(["-c", str(config), "prepare", "--workers", "1"]) == 0
+    assert main(["-w", str(config), "prepare", "--workers", "1"]) == 0
     assert "1 chunks skipped: DataVersion outside" in capsys.readouterr().out
     assert make_client(config).get("/api/meta").json()["chunk_count"] == 5
 

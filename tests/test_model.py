@@ -79,15 +79,15 @@ def trained(tmp_path: Path):
     """Train on one labelled world, predict on a second world with other builds."""
     train_houses = {(x, z) for x in range(0, 3) for z in range(0, 3)} | {(x, z) for x in range(28, 31) for z in range(28, 31)}
     test_houses = {(x, z) for x in range(14, 17) for z in range(5, 7)}
-    config = write_config(tmp_path / "setup" / "chunktriager.toml", {
+    config = write_config(tmp_path / "setup", {
         "a": (_make_world(tmp_path / "world_a", train_houses, 1), "train"),
         "b": (_make_world(tmp_path / "world_b", test_houses, 2), "val"),
     }, extra="[training]\nfolds = 2\n")
-    assert main(["-c", str(config), "prepare", "--workers", "1"]) == 0
+    assert main(["-w", str(config), "prepare", "--workers", "1"]) == 0
     _label(config, "a", train_houses)
     _label(config, "b", test_houses)
-    assert main(["-c", str(config), "train"]) == 0
-    assert main(["-c", str(config), "predict", "b"]) == 0
+    assert main(["-w", str(config), "train"]) == 0
+    assert main(["-w", str(config), "predict", "b"]) == 0
     return config, test_houses
 
 
@@ -130,7 +130,7 @@ def test_train_uses_only_train_role_and_evaluate_reports_val(trained, capsys):
     config, _ = trained
     meta = json.loads((load_config(config).model_dir / "meta.json").read_text(encoding="utf-8"))
     assert [w["name"] for w in meta["worlds"]] == ["a"]
-    assert main(["-c", str(config), "evaluate"]) == 0
+    assert main(["-w", str(config), "evaluate"]) == 0
     out = capsys.readouterr().out
     assert "a: ROC AUC" in out and "held-out worlds" in out and "b: 1024 chunks, 6 player-made" in out
 

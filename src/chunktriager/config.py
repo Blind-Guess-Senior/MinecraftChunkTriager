@@ -1,14 +1,16 @@
-"""Configuration file describing one training setup.
+"""Working directory describing one training setup.
 
-A configuration lists the worlds to work with and the role each one plays,
-where derived data and the model go, and tool settings. Users keep their
-own files anywhere; ``chunktriager init`` writes a commented template.
-Relative paths are resolved against the folder holding the file.
+A working directory holds ``chunktriager.toml`` (the worlds to work with,
+the role each one plays, tool settings) and everything the commands
+produce. Users create one anywhere with ``chunktriager init``. Relative
+paths in the file are resolved against the working directory.
 
-Data layout under ``data_dir``::
+Layout::
 
+    chunktriager.toml
     labels/<world>.sqlite3     human labels, the only data that cannot be rebuilt
     cache/<world>/             features (also the chunk index), tiles, predictions
+    models/current/            model written by `train` (unless `model` is set)
 """
 
 from __future__ import annotations
@@ -107,8 +109,7 @@ class World:
 
 @dataclass(frozen=True)
 class Config:
-    path: Path
-    data_dir: Path
+    workdir: Path
     model_dir: Path
     game_version: str
     dimension: str
@@ -125,6 +126,10 @@ class Config:
                 return layer
         raise KeyError(name)
 
+    @property
+    def path(self) -> Path:
+        return self.workdir / CONFIG_NAME
+
     def world(self, name: str) -> World:
         for w in self.worlds:
             if w.name == name:
@@ -137,10 +142,6 @@ class Config:
         if names:
             return [self.world(n) for n in names]
         return [w for w in self.worlds if w.role in roles]
-
-
-def default_config_path() -> Path:
-    return Path.cwd() / CONFIG_NAME
 
 
 def _resolve(base: Path, value: object, key: str) -> Path:
@@ -162,7 +163,7 @@ def _choice(value: object, options: tuple[str, ...], key: str) -> str:
     return value
 
 
-def _worlds(raw: list, base: Path, data_dir: Path, unlabeled: str) -> tuple[World, ...]:
+def _worlds(raw: list, base: Path, unlabeled: str) -> tuple[World, ...]:
     worlds = []
     for i, entry in enumerate(raw):
         key = f"worlds[{i}]"
@@ -177,8 +178,8 @@ def _worlds(raw: list, base: Path, data_dir: Path, unlabeled: str) -> tuple[Worl
             path=path,
             role=_choice(entry.get("role", "train"), ROLES, f"{key}.role"),
             unlabeled=_choice(entry.get("unlabeled", unlabeled), UNLABELED, f"{key}.unlabeled"),
-            labels_path=data_dir / "labels" / f"{name}.sqlite3",
-            cache_dir=data_dir / "cache" / name,
+            labels_path=base / "labels" / f"{name}.sqlite3",
+            cache_dir=base / "cache" / name,
         ))
     names = [w.name.casefold() for w in worlds]
     if len(set(names)) != len(names):
@@ -186,19 +187,18 @@ def _worlds(raw: list, base: Path, data_dir: Path, unlabeled: str) -> tuple[Worl
     return tuple(worlds)
 
 
-def load_config(path: Path) -> Config:
-    path = path.resolve()
+def load_config(workdir: Path) -> Config:
+    base = workdir.resolve()
+    path = base / CONFIG_NAME
     if not path.is_file():
-        raise ConfigError(f"{path} not found; run `chunktriager init` to create one, or pass -c <file>")
+        raise ConfigError(f"{base} is not a working directory (no {CONFIG_NAME}); "
+                          "create one with `chunktriager -w <folder> init`, or pass -w")
     try:
         with path.open("rb") as f:
             raw = tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: {e}") from None
-    base = path.parent
-
-    data_dir = _resolve(base, raw.get("data_dir", "data"), "data_dir")
-    model_dir = _resolve(base, raw["model"], "model") if "model" in raw else data_dir / "models" / "current"
+    model_dir = _resolve(base, raw["model"], "model") if "model" in raw else base / "models" / "current"
 
     mca = raw.get("mcaselector")
     mcaselector = None
@@ -229,8 +229,7 @@ def load_config(path: Path) -> Config:
         raise ConfigError("training.params must be a table")
     prot = raw.get("protection", {})
     return Config(
-        path=path,
-        data_dir=data_dir,
+        workdir=base,
         model_dir=model_dir,
         game_version=str(raw.get("game_version", "java-26.2")),
         dimension=raw.get("dimension", "minecraft:overworld"),
@@ -253,5 +252,5 @@ def load_config(path: Path) -> Config:
                                            "protection.short_radius_blocks"),
             threshold=float(prot.get("threshold", 0.01)),
         ),
-        worlds=_worlds(raw.get("worlds", []), base, data_dir, unlabeled),
+        worlds=_worlds(raw.get("worlds", []), base, unlabeled),
     )

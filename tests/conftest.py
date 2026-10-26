@@ -68,20 +68,20 @@ def world(tmp_path: Path) -> Path:
     return tmp_path / "world"
 
 
-def write_config(path: Path, worlds: dict[str, tuple[Path, str]], extra: str = "") -> Path:
-    """Config with ``worlds`` mapping name to (path, role)."""
+def write_config(workdir: Path, worlds: dict[str, tuple[Path, str]], extra: str = "") -> Path:
+    """Working directory whose config maps world name to (path, role); returns the directory."""
     entries = "".join(
         f"[[worlds]]\nname = {json.dumps(name)}\npath = {json.dumps(p.as_posix())}\nrole = {json.dumps(role)}\n"
         for name, (p, role) in worlds.items()
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f'data_dir = "data"\n{extra}\n{entries}', encoding="utf-8")
-    return path
+    workdir.mkdir(parents=True, exist_ok=True)
+    (workdir / "chunktriager.toml").write_text(f"{extra}\n{entries}", encoding="utf-8")
+    return workdir
 
 
 @pytest.fixture
 def config(tmp_path: Path, world: Path) -> Path:
-    return write_config(tmp_path / "setup" / "chunktriager.toml", {"w": (world, "train")})
+    return write_config(tmp_path / "setup", {"w": (world, "train")})
 
 
 def pack(indices, bits: int):
