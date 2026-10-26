@@ -1,32 +1,31 @@
 """Cross-world experiment: train on the main world, test on an all-natural world.
 
-Usage: uv run python scripts/experiment_cross_world.py <main workspace> <natural workspace>
+Usage: uv run python scripts/experiment_cross_world.py <config> <main world> <natural world>
 
 Experimental code: rarity features here are not yet part of the feature schema.
 """
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
 
+from chunktriager.config import load_config
 from chunktriager.model.dataset import FeatureSet
 from chunktriager.model.evaluate import protect
 from chunktriager.model.train import fit
+from chunktriager.store import read_labels
 
 BANDS = ("above", "surface", "shallow", "deep")
 
 
-def load(ws: Path):
-    fs = FeatureSet.load(next((ws / "features").iterdir()))
+def load(world):
+    fs = FeatureSet.load(next((world.cache_dir / "features").iterdir()))
     rows = np.flatnonzero(fs.column("chunk.full") == 1)
-    db = sqlite3.connect(f"file:{ws / 'labels.sqlite3'}?mode=ro", uri=True)
-    keep = {(x, z) for x, z in db.execute("select x, z from labels where label='keep'")}
-    db.close()
+    keep = {p for p, label in read_labels(world.labels_path, "minecraft:overworld").items() if label == "keep"}
     pos = fs.positions[rows]
     y = np.array([tuple(p) in keep for p in pos], dtype=int)
     X, _ = fs.matrix()
@@ -68,9 +67,9 @@ def report(name: str, pos: np.ndarray, p: np.ndarray, biome_of: np.ndarray, name
 
 
 def main() -> None:
-    main_ws, nat_ws = Path(sys.argv[1]), Path(sys.argv[2])
-    fa, ra, pa, ya, Xa = load(main_ws)
-    fb, rb, pb, yb, Xb = load(nat_ws)
+    cfg = load_config(Path(sys.argv[1]))
+    fa, ra, pa, ya, Xa = load(cfg.world(sys.argv[2]))
+    fb, rb, pb, yb, Xb = load(cfg.world(sys.argv[3]))
     assert fa.fingerprint == fb.fingerprint, "feature schemas differ"
     assert yb.sum() == 0, "natural world has player-made labels"
     bio = [i for i, c in enumerate(fa.columns) if c.startswith("biome.")]

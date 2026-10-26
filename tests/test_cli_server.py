@@ -14,25 +14,32 @@ from chunktriager.worldio import RegionPos
 from .conftest import chunk_nbt, write_region
 
 
-@pytest.fixture
-def client(workspace: Path) -> TestClient:
-    assert main(["-w", str(workspace), "scan"]) == 0
-    cfg = load_config(workspace)
+def make_client(config: Path, name: str = "w") -> TestClient:
+    from chunktriager.cli import _dimension_dir, _features_dir
+
+    cfg = load_config(config)
+    world = cfg.world(name)
     profile = get_profile(cfg.game_version)
-    return TestClient(create_app(cfg, profile, profile.dimension_dir(cfg.world, cfg.dimension)))
+    return TestClient(create_app(cfg, world, profile, _dimension_dir(cfg, world), _features_dir(cfg, world)))
 
 
-def test_scan_refuses_unupgraded_chunks(workspace: Path, world: Path, capsys):
+@pytest.fixture
+def client(config: Path) -> TestClient:
+    assert main(["-c", str(config), "prepare", "--workers", "1"]) == 0
+    return make_client(config)
+
+
+def test_prepare_skips_unupgraded_chunks(config: Path, world: Path, capsys):
     region = world / "dimensions/minecraft/overworld/region/r.1.0.mca"
     write_region(region, {(32, 0): chunk_nbt(32, 0, data_version=3700)})
-    assert main(["-w", str(workspace), "scan"]) == 1
-    assert "index NOT updated" in capsys.readouterr().err
-    assert main(["-w", str(workspace), "scan", "--allow-problems"]) == 0
+    assert main(["-c", str(config), "prepare", "--workers", "1"]) == 0
+    assert "1 chunks skipped: DataVersion outside" in capsys.readouterr().out
+    assert make_client(config).get("/api/meta").json()["chunk_count"] == 5
 
 
 def test_meta_and_state(client: TestClient):
     meta = client.get("/api/meta").json()
-    assert meta["chunk_count"] == 5
+    assert meta["chunk_count"] == 5 and meta["world"] == "w"
     assert meta["regions"] == [[-1, 0], [0, 0]]
     state = client.get("/api/state", params=dict(rx0=-1, rz0=0, rx1=0, rz1=0)).json()
     assert set(state) == {"-1,0", "0,0"}

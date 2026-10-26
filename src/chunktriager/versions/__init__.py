@@ -8,7 +8,7 @@ it here to support another version.
 
 from __future__ import annotations
 
-from .base import BlockEntity, ChunkInfo, UnsupportedChunkError, VersionProfile
+from .base import BlockEntity, ChunkInfo, Generator, UnsupportedChunkError, VersionProfile
 from .java_26_2 import PROFILE as _JAVA_26_2
 
 _PROFILES: dict[str, VersionProfile] = {p.name: p for p in (_JAVA_26_2,)}
@@ -35,6 +35,7 @@ def supported_versions() -> list[str]:
 __all__ = [
     "BlockEntity",
     "ChunkInfo",
+    "Generator",
     "UnknownVersionError",
     "UnsupportedChunkError",
     "VersionProfile",

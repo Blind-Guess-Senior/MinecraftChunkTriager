@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zlib
 from pathlib import Path
 
@@ -67,25 +68,20 @@ def world(tmp_path: Path) -> Path:
     return tmp_path / "world"
 
 
-@pytest.fixture
-def workspace(tmp_path: Path, world: Path) -> Path:
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    (ws / "triage.toml").write_text(
-        f"""
-world = {str(world)!r}
-game_version = "java-26.2"
-
-[mcaselector]
-command = ["java", "-jar", "mcaselector.jar"]
-
-[[layers]]
-name = "surface"
-title = "Surface"
-""",
-        encoding="utf-8",
+def write_config(path: Path, worlds: dict[str, tuple[Path, str]], extra: str = "") -> Path:
+    """Config with ``worlds`` mapping name to (path, role)."""
+    entries = "".join(
+        f"[[worlds]]\nname = {json.dumps(name)}\npath = {json.dumps(p.as_posix())}\nrole = {json.dumps(role)}\n"
+        for name, (p, role) in worlds.items()
     )
-    return ws
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'data_dir = "data"\n{extra}\n{entries}', encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def config(tmp_path: Path, world: Path) -> Path:
+    return write_config(tmp_path / "setup" / "chunktriager.toml", {"w": (world, "train")})
 
 
 def pack(indices, bits: int):

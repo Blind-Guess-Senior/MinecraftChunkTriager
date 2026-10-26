@@ -59,3 +59,73 @@ def at_recall(y: np.ndarray, prob: np.ndarray, targets=(0.9, 0.95, 0.99, 1.0)) -
         fp = int((neg >= t).sum())
         result.append(Threshold(t, float((prob[y == 1] >= t).mean()), fp / max(1, len(neg)), fp))
     return result
+
+
+# Reports used by `chunktriager evaluate` -------------------------------------------
+
+THRESHOLDS = (3e-2, 1e-2, 3e-3)
+
+
+def _usable(w):
+    use = w.y >= 0
+    return w.X[use], w.y[use].astype(np.int32)
+
+
+def _print_protection(positions, prob, rail_only, y, prot) -> None:
+    for t in sorted({*THRESHOLDS, prot.threshold}, reverse=True):
+        hit = prob >= t
+        kept = protect_two_radii(positions, hit.astype(np.float32), rail_only & hit,
+                                 prot.radius, prot.short_radius) > 0
+        made = f"player-made protected {kept[y == 1].mean():.3f}, " if (y == 1).any() else ""
+        mark = "  <- threshold" if t == prot.threshold else ""
+        print(f"    t={t:.0e}: {made}deletable {(~kept).mean():.3f}, "
+              f"natural flagged {int((hit & (y == 0)).sum())} ({(hit & (y == 0)).sum() / max(1, (y == 0).sum()):.4f}){mark}")
+
+
+def report_grouped_cv(worlds, training, prot) -> None:
+    """Site-grouped CV per train world; the other train worlds join every fold's training set."""
+    import scipy.sparse as sp
+    from sklearn.metrics import roc_auc_score
+
+    from .train import assign_folds, fit, site_groups
+
+    print(f"cross-validation on train worlds ({training.folds} folds, grouped by site)")
+    for w in worlds:
+        use = np.flatnonzero(w.y >= 0)
+        y = w.y[use].astype(np.int32)
+        if not (y == 1).any():
+            print(f"  {w.name}: no player-made chunks, used as training data only")
+            continue
+        folds = assign_folds(site_groups(w.positions[use], y), y, training.folds)
+        extra = [_usable(o) for o in worlds if o is not w]
+        oof = np.zeros(len(use))
+        for f in range(training.folds):
+            te = folds == f
+            if not te.any():
+                continue
+            model = fit(sp.vstack([w.X[use][~te], *(X for X, _ in extra)], format="csr"),
+                        np.concatenate([y[~te], *(y_ for _, y_ in extra)]),
+                        training.rounds, training.params)
+            oof[te] = model.predict(w.X[use][te])
+        print(f"  {w.name}: ROC AUC {roc_auc_score(y, oof):.4f}")
+        _print_protection(w.positions[use], oof, w.rail_only[use], y, prot)
+
+
+def report_held_out(train, held, training, prot) -> None:
+    """Fit on all train worlds, score each held-out world."""
+    import scipy.sparse as sp
+    from sklearn.metrics import roc_auc_score
+
+    from .train import fit
+
+    parts = [_usable(w) for w in train]
+    model = fit(sp.vstack([X for X, _ in parts], format="csr"), np.concatenate([y for _, y in parts]),
+                training.rounds, training.params)
+    print("held-out worlds (model fitted on all train worlds)")
+    for w in held:
+        use = np.flatnonzero(w.y >= 0)
+        y = w.y[use].astype(np.int32)
+        p = model.predict(w.X[use])
+        auc = f", ROC AUC {roc_auc_score(y, p):.4f}" if 0 < y.sum() < len(y) else ", all natural"
+        print(f"  {w.name}: {len(y)} chunks, {int(y.sum())} player-made{auc}")
+        _print_protection(w.positions[use], p, w.rail_only[use], y, prot)

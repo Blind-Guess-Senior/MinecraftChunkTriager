@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .config import Config, RenderLayer
+from .config import McaSelectorConfig, RenderLayer
 from .worldio import RegionPos
 
 TILE = 512
@@ -56,7 +56,7 @@ def _isolated_env(home: Path) -> dict[str, str]:
 
 
 def run_mcaselector(
-    cfg: Config, dimension_dir: Path, regions: list[RegionPos], layer: RenderLayer, work: Path
+    mca: McaSelectorConfig, dimension_dir: Path, regions: list[RegionPos], layer: RenderLayer, work: Path
 ) -> Path:
     selection = work / "selection.csv"
     output = work / "out.png"
@@ -64,7 +64,7 @@ def run_mcaselector(
     home = work / "home"
     home.mkdir(exist_ok=True)
     cmd = [
-        *cfg.mcaselector.command,
+        *mca.command,
         "--mode", "image",
         "--world", str(dimension_dir),
         "--selection", str(selection),
@@ -77,12 +77,12 @@ def run_mcaselector(
             env=_isolated_env(home),
             capture_output=True,
             text=True,
-            timeout=cfg.mcaselector.timeout,
+            timeout=mca.timeout,
         )
     except FileNotFoundError:
         raise RenderError(f"cannot start MCA Selector: {cmd[0]!r} not found") from None
     except subprocess.TimeoutExpired:
-        raise RenderError(f"MCA Selector timed out after {cfg.mcaselector.timeout}s") from None
+        raise RenderError(f"MCA Selector timed out after {mca.timeout}s") from None
     # The CLI reports argument errors on stdout and still exits with 0, so
     # the output file is the only reliable success signal.
     if proc.returncode != 0 or not output.is_file():
@@ -151,19 +151,19 @@ def pyramid_levels(regions: Iterable[RegionPos]) -> int:
 
 
 def render_layer(
-    cfg: Config,
+    mca: McaSelectorConfig,
     dimension_dir: Path,
     regions: list[RegionPos],
     layer: RenderLayer,
+    out_root: Path,
     progress: Callable[[int, int], None] = lambda done, total: None,
 ) -> None:
-    out_root = cfg.tiles_dir
     staging = out_root / f".{layer.name}.staging"
     shutil.rmtree(staging, ignore_errors=True)
-    blocks = group_blocks(regions, cfg.mcaselector.block_regions)
+    blocks = group_blocks(regions, mca.block_regions)
     for i, block in enumerate(blocks):
         with tempfile.TemporaryDirectory(prefix="chunktriager-") as tmp:
-            image = run_mcaselector(cfg, dimension_dir, block, layer, Path(tmp))
+            image = run_mcaselector(mca, dimension_dir, block, layer, Path(tmp))
             cut_block_image(image, block, staging, layer.name)
         progress(i + 1, len(blocks))
     build_pyramid(staging, layer.name, pyramid_levels(regions))

@@ -79,7 +79,7 @@ def _process_region(dimension_dir: Path, out_dir: Path, rpos: RegionPos, force: 
 
 
 def extract_dimension(
-    workspace: Path,
+    cache_dir: Path,
     dimension_dir: Path,
     game_version: str,
     workers: int | None = None,
@@ -89,7 +89,7 @@ def extract_dimension(
     profile = get_profile(game_version)
     vocab = load_vocabulary(profile.vocabulary)
     layout = build_layout(vocab)
-    out_dir = table_dir(workspace, layout.schema)
+    out_dir = table_dir(cache_dir, layout.schema)
     write_manifest(out_dir, layout.schema, game_version)
     regions = list_regions(dimension_dir / "region")
     workers = workers or max(1, (os.cpu_count() or 2) - 1)

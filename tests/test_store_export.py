@@ -8,32 +8,34 @@ from chunktriager.store import Store, StoreError
 DIM = "minecraft:overworld"
 
 
+KNOWN = {(x, z) for x in range(5) for z in range(5)}
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> Store:
     s = Store(tmp_path / "labels.sqlite3")
-    s.replace_chunks(DIM, [(x, z) for x in range(5) for z in range(5)])
     yield s
     s.close()
 
 
 def test_set_labels_ignores_unknown_chunks(store: Store):
-    assert store.set_labels(DIM, [(0, 0), (99, 99)], "keep", "single") == 1
+    assert store.set_labels(DIM, [(0, 0), (99, 99)], "keep", "single", KNOWN) == 1
     assert store.labels(DIM) == {(0, 0): ("keep", "single")}
 
 
 def test_relabel_counts_only_real_changes(store: Store):
-    store.set_labels(DIM, [(0, 0), (1, 0)], "keep", "area")
-    assert store.set_labels(DIM, [(0, 0), (1, 0)], "keep", "area") == 0
-    assert store.set_labels(DIM, [(0, 0)], "delete", "single") == 1
+    store.set_labels(DIM, [(0, 0), (1, 0)], "keep", "area", KNOWN)
+    assert store.set_labels(DIM, [(0, 0), (1, 0)], "keep", "area", KNOWN) == 0
+    assert store.set_labels(DIM, [(0, 0)], "delete", "single", KNOWN) == 1
     assert store.label_counts(DIM) == {"keep": 1, "delete": 1}
 
 
 def test_undo_restores_previous_batch(store: Store):
-    store.set_labels(DIM, [(0, 0)], "keep", "single")
-    store.set_labels(DIM, [(0, 0), (1, 1)], "delete", "area")
+    store.set_labels(DIM, [(0, 0)], "keep", "single", KNOWN)
+    store.set_labels(DIM, [(0, 0), (1, 1)], "delete", "area", KNOWN)
     assert store.undo(DIM) == 2
     assert store.labels(DIM) == {(0, 0): ("keep", "single")}
-    store.set_labels(DIM, [(0, 0)], None, "single")
+    store.set_labels(DIM, [(0, 0)], None, "single", KNOWN)
     assert store.labels(DIM) == {}
     store.undo(DIM)
     assert store.labels(DIM) == {(0, 0): ("keep", "single")}
@@ -41,7 +43,7 @@ def test_undo_restores_previous_batch(store: Store):
 
 def test_invalid_label_rejected(store: Store):
     with pytest.raises(StoreError):
-        store.set_labels(DIM, [(0, 0)], "maybe", "single")
+        store.set_labels(DIM, [(0, 0)], "maybe", "single", KNOWN)
 
 
 def test_selection_csv_matches_mcaselector_format(tmp_path: Path):
@@ -55,7 +57,7 @@ def test_concurrent_access_from_threads(store: Store):
     from concurrent.futures import ThreadPoolExecutor
 
     def work(i: int):
-        store.set_labels(DIM, [(i % 5, i // 5 % 5)], "keep" if i % 2 else "delete", "single")
+        store.set_labels(DIM, [(i % 5, i // 5 % 5)], "keep" if i % 2 else "delete", "single", KNOWN)
         return len(store.labels(DIM, (0, 0, 4, 4)))
 
     with ThreadPoolExecutor(16) as pool:

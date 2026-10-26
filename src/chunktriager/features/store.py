@@ -1,6 +1,6 @@
 """On-disk feature tables.
 
-One Parquet file per region under ``<workspace>/features/<schema fingerprint>/``.
+One Parquet file per region under ``<cache>/features/<schema fingerprint>/``.
 Rows are sparse (most of the ~5000 columns are zero for any chunk): each
 row stores the indices and values of its non-zero columns. ``manifest.json``
 next to the files records the column names, so a table can be read without
@@ -26,8 +26,8 @@ ARROW_SCHEMA = pa.schema([
 ])
 
 
-def table_dir(workspace: Path, schema: Schema) -> Path:
-    return workspace / "features" / schema.fingerprint
+def table_dir(cache_dir: Path, schema: Schema) -> Path:
+    return cache_dir / "features" / schema.fingerprint
 
 
 def write_manifest(directory: Path, schema: Schema, game_version: str) -> None:
@@ -61,6 +61,15 @@ def write_region(path: Path, positions: list[tuple[int, int]], rows: list[np.nda
 
 def read_manifest(directory: Path) -> dict:
     return json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+
+
+def read_positions(directory: Path) -> set[tuple[int, int]]:
+    """Chunks with a feature row: the world's chunk index."""
+    result = set()
+    for path in directory.glob("r.*.parquet"):
+        t = pq.read_table(path, columns=["x", "z"])
+        result.update(zip(t.column("x").to_pylist(), t.column("z").to_pylist()))
+    return result
 
 
 def read_table(directory: Path):

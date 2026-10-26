@@ -68,8 +68,31 @@ class ChunkData:
     structures: frozenset[str]   # structures with a start or reference here
 
 
+@dataclass(frozen=True)
+class Generator:
+    """How a dimension's terrain is generated, as far as labeling cares.
+
+    ``kind`` is ``noise`` (normal terrain), ``flat`` (superflat, including
+    void presets) or ``other``. For flat worlds ``layers`` lists
+    ``(block, height)`` from the bottom up.
+    """
+
+    kind: str
+    type: str
+    layers: tuple[tuple[str, int], ...] = ()
+    biome: str | None = None
+
+    def describe(self) -> str:
+        if self.kind != "flat":
+            return self.kind if self.kind == "noise" else self.type
+        solid = [(b, h) for b, h in self.layers if b != "minecraft:air"]
+        if not solid:
+            return "void"
+        return "flat: " + ", ".join(f"{b.removeprefix('minecraft:')} x{h}" for b, h in solid)
+
+
 class VersionProfile(ABC):
-    #: Value used for ``game_version`` in the workspace config.
+    #: Value used for ``game_version`` in the configuration.
     name: str
     #: Accepted DataVersion range, ``min <= v < max``.
     data_version_min: int
@@ -81,6 +104,10 @@ class VersionProfile(ABC):
     @abstractmethod
     def dimension_dir(self, world: Path, dimension: str) -> Path:
         """Folder holding ``region``/``entities``/``poi`` for a dimension."""
+
+    @abstractmethod
+    def read_generator(self, world: Path, dimension: str) -> Generator | None:
+        """The dimension's generator, or None if the world does not record one."""
 
     #: Name of the id vocabulary file in ``versions/data``.
     vocabulary: str

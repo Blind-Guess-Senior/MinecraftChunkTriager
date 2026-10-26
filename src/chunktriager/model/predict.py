@@ -1,6 +1,6 @@
-"""Predictions for one workspace, stored next to its features.
+"""Predictions for one world, stored in its cache folder.
 
-``<workspace>/predictions.parquet`` holds, per full chunk: the model
+``<cache>/predictions.parquet`` holds, per full chunk: the model
 probability that the chunk itself is player-made, whether its only evidence
 is rails, and whether protection keeps it. Chunks not in the file (not
 generated to completion) are never player-made and never protected by
@@ -52,7 +52,7 @@ def predict_world(bundle: ModelBundle, world: World, prot: ProtectionConfig) -> 
     return Predictions(world.positions, prob, world.rail_only, protected, meta)
 
 
-def save_predictions(workspace: Path, p: Predictions) -> Path:
+def save_predictions(cache_dir: Path, p: Predictions) -> Path:
     table = pa.table({
         "x": pa.array(p.positions[:, 0], pa.int32()),
         "z": pa.array(p.positions[:, 1], pa.int32()),
@@ -60,15 +60,15 @@ def save_predictions(workspace: Path, p: Predictions) -> Path:
         "rail_only": pa.array(p.rail_only, pa.bool_()),
         "protected": pa.array(p.protected, pa.bool_()),
     }).replace_schema_metadata({"meta": json.dumps(p.meta)})
-    path = workspace / FILE
+    path = cache_dir / FILE
     tmp = path.with_suffix(".tmp")
     pq.write_table(table, tmp, compression="zstd")
     tmp.replace(path)
     return path
 
 
-def load_predictions(workspace: Path) -> Predictions | None:
-    path = workspace / FILE
+def load_predictions(cache_dir: Path) -> Predictions | None:
+    path = cache_dir / FILE
     if not path.is_file():
         return None
     t = pq.read_table(path)

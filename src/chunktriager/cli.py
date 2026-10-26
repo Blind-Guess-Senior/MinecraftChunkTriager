@@ -1,7 +1,8 @@
-"""Command line entry point: ``chunktriager <command>``.
+"""Command line entry point: ``chunktriager [-c config] <command>``.
 
-The workspace comes from ``-w``, ``CHUNKTRIAGER_WORKSPACE`` or the default
-set with ``chunktriager use``; see :mod:`chunktriager.workspace`.
+Every command reads one configuration file (``-c``, default
+``chunktriager.toml`` in the current directory) that lists the worlds and
+their roles; see :mod:`chunktriager.config`.
 """
 
 from __future__ import annotations
@@ -11,330 +12,338 @@ import json
 import sys
 from pathlib import Path
 
-from . import workspace as workspace_mod
-from .config import CONFIG_NAME, ConfigError, load_config
+from .config import CONFIG_NAME, Config, ConfigError, World, default_config_path, load_config
 from .render import RenderError, render_layer
 from .store import Store
 from .versions import UnknownVersionError, get_profile, supported_versions
-from .worldio import RegionFile, RegionFormatError, list_regions
+from .worldio import list_regions
 
 _TEMPLATE = """\
-# Path to the force-upgraded COPY of the world (not the world you play on).
-world = {world}
-dimension = "minecraft:overworld"
+# chunktriager configuration. Relative paths are relative to this file.
+
+# Labels, per-world caches and models are stored here. Labels are the only
+# part that cannot be rebuilt.
+data_dir = "data"
+# Model written by `train` and read by `predict` (default: <data_dir>/models/current).
+# model = "data/models/current"
+
 # One of: {versions}
 game_version = "java-26.2"
+dimension = "minecraft:overworld"
 
-[mcaselector]
-# Full command used to start MCA Selector's CLI.
-command = ["java", "-jar", "C:/path/to/mcaselector.jar"]
-block_regions = 8
+# MCA Selector draws the base map of the labeling page (`render`).
+# [mcaselector]
+# command = ["java", "-jar", "C:/path/to/mcaselector.jar"]
 
-# Base-map layers rendered by MCA Selector; `args` are passed to --mode image.
-[[layers]]
-name = "surface"
-title = "Surface"
-args = []
-
-[[layers]]
-name = "below-60"
-title = "Below Y=60"
-args = ["--render-height", "60"]
-
-[server]
-host = "127.0.0.1"
-port = 8765
-
+# One entry per world. Use force-upgraded copies, never a world you play on.
+# name:      used for file names and on the command line (default: folder name)
+# role:      train | val | test | none
+#            train: fitted on and cross-validated; val: scored by `evaluate`;
+#            test: scored only by `evaluate --test`; none: labeling only
+# unlabeled: natural (unlabeled chunks are natural) | ignore (default: [training])
+{worlds}
 [training]
-# "natural": unlabeled chunks count as natural, so only player-made chunks
-# need labeling. "ignore": train only on explicitly labeled chunks.
 unlabeled = "natural"
+folds = 5
+# rounds = 400
+# [training.params]        # LightGBM parameters overriding the defaults
+# learning_rate = 0.05
 
 [protection]
-# Chunks within `radius` of a likely player-made chunk are protected.
+# Chunks within `radius` of a chunk scoring at least `threshold` are kept.
 # Evidence that comes only from rails protects `short_radius`.
 radius = 8
 short_radius = 1
 threshold = 0.01
+
+[server]
+host = "127.0.0.1"
+port = 8765
+"""
+
+_EXAMPLE_WORLD = """\
+# [[worlds]]
+# name = "main"
+# path = "C:/path/to/world-copy"
+# role = "train"
 """
 
 
-def _context(workspace: Path):
-    cfg = load_config(workspace)
-    profile = get_profile(cfg.game_version)
-    dimension_dir = profile.dimension_dir(cfg.world, cfg.dimension)
-    if not (dimension_dir / "region").is_dir():
-        raise ConfigError(f"no region folder at {dimension_dir / 'region'}")
-    return cfg, profile, dimension_dir
+def _toml_str(value: str) -> str:
+    # JSON string escapes are valid TOML basic-string escapes.
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _find_worlds(folder: Path) -> list[Path]:
+    if not folder.is_dir():
+        raise ConfigError(f"{folder} is not a folder")
+    return sorted(p for p in folder.iterdir() if (p / "level.dat").is_file())
+
+
+def _relative(path: Path, base: Path) -> str:
+    try:
+        return path.resolve().relative_to(base.resolve()).as_posix()
+    except ValueError:
+        return path.resolve().as_posix()
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    path = args.workspace / CONFIG_NAME
+    path: Path = args.config
     if path.exists():
         print(f"{path} already exists; not overwriting", file=sys.stderr)
         return 1
-    args.workspace.mkdir(parents=True, exist_ok=True)
-    world = args.world.resolve().as_posix() if args.world else "C:/path/to/world-copy"
-    path.write_text(
-        _TEMPLATE.format(world=json.dumps(world), versions=", ".join(supported_versions())),
-        encoding="utf-8",
-    )
-    workspace_mod.save_default(args.workspace)
-    print(f"wrote {path} and made it the default workspace")
-    print("edit it, then run `chunktriager scan`")
+    entries = []
+    for folder in args.worlds or []:
+        for world in _find_worlds(folder):
+            entries.append(f"[[worlds]]\nname = {_toml_str(world.name)}\n"
+                           f"path = {_toml_str(_relative(world, path.parent))}\nrole = \"train\"\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_TEMPLATE.format(
+        versions=", ".join(supported_versions()),
+        worlds="\n".join(entries) if entries else _EXAMPLE_WORLD,
+    ), encoding="utf-8")
+    print(f"wrote {path} with {len(entries)} worlds")
+    print("set each world's role, then run `chunktriager prepare`")
     return 0
 
 
-def cmd_use(args: argparse.Namespace) -> int:
-    if args.folder is None:
-        current = workspace_mod.saved_default()
-        print(current if current else "no default workspace set")
-        return 0
-    if not (args.folder / CONFIG_NAME).is_file():
-        print(f"{args.folder / CONFIG_NAME} not found; run `chunktriager -w {args.folder} init` first",
-              file=sys.stderr)
-        return 1
-    workspace_mod.save_default(args.folder)
-    print(f"default workspace: {args.folder.resolve()}")
-    return 0
+# World context -----------------------------------------------------------------
+
+def _dimension_dir(cfg: Config, world: World) -> Path:
+    profile = get_profile(cfg.game_version)
+    path = profile.dimension_dir(world.path, cfg.dimension)
+    if not (path / "region").is_dir():
+        raise ConfigError(f"world {world.name!r}: no region folder at {path / 'region'}")
+    return path
 
 
-def cmd_scan(args: argparse.Namespace) -> int:
-    cfg, profile, dimension_dir = _context(args.workspace)
-    region_dir = dimension_dir / "region"
-    regions = list_regions(region_dir)
-    positions: list[tuple[int, int]] = []
-    problems = 0
-    for i, rpos in enumerate(regions, 1):
-        try:
-            region = RegionFile(region_dir / rpos.filename)
-            for cx, cz, root in region.iter_chunks():
-                try:
-                    profile.parse_chunk(root)
-                except Exception as e:  # report and keep scanning
-                    problems += 1
-                    if problems <= 20:
-                        print(f"  {rpos.filename} ({cx}, {cz}): {e}", file=sys.stderr)
-                    continue
-                positions.append((cx, cz))
-        except (RegionFormatError, OSError) as e:
-            problems += 1
-            print(f"  {rpos.filename}: {e}", file=sys.stderr)
-        print(f"\rscanned {i}/{len(regions)} regions", end="", flush=True)
-    print()
-    with_issues = f", {problems} problems (first 20 shown above)" if problems else ""
-    print(f"{len(positions)} chunks in {len(regions)} regions{with_issues}")
-    if problems and not args.allow_problems:
-        print("index NOT updated; fix the world copy or pass --allow-problems", file=sys.stderr)
-        return 1
-    store = Store(cfg.db_path)
-    try:
-        store.replace_chunks(cfg.dimension, positions)
-    finally:
-        store.close()
-    return 0
-
-
-def cmd_render(args: argparse.Namespace) -> int:
-    cfg, _, dimension_dir = _context(args.workspace)
-    regions = list_regions(dimension_dir / "region")
-    names = args.layers or [layer.name for layer in cfg.layers]
-    for name in names:
-        try:
-            layer = cfg.layer(name)
-        except KeyError:
-            print(f"unknown layer {name!r}", file=sys.stderr)
-            return 1
-        print(f"rendering layer {name}")
-        render_layer(
-            cfg, dimension_dir, regions, layer,
-            lambda done, total: print(f"\r  block {done}/{total}", end="", flush=True),
-        )
-        print()
-    return 0
-
-
-def cmd_features(args: argparse.Namespace) -> int:
-    from .features.pipeline import extract_dimension
-
-    cfg, _, dimension_dir = _context(args.workspace)
-    errors = []
-
-    def progress(done: int, total: int, r) -> None:
-        if r.error:
-            errors.append(r)
-        print(f"\rregions {done}/{total}", end="", flush=True)
-
-    out_dir, results = extract_dimension(
-        cfg.workspace, dimension_dir, cfg.game_version,
-        workers=args.workers, force=args.force, progress=progress,
-    )
-    print()
-    done = [r for r in results if not r.skipped and not r.error]
-    print(f"{sum(r.chunks for r in done)} chunks in {len(done)} regions written to {out_dir}")
-    skipped = sum(r.skipped for r in results)
-    if skipped:
-        print(f"{skipped} regions unchanged, skipped (use --force to redo)")
-    rejected = sum(r.rejected for r in results)
-    if rejected:
-        print(f"{rejected} chunks rejected by the {cfg.game_version} profile (not upgraded)")
-    for r in errors:
-        print(f"  {r.region.filename}: {r.error}", file=sys.stderr)
-    return 1 if errors else 0
-
-
-def _features_dir(cfg) -> Path:
+def _features_dir(cfg: Config, world: World, required: bool = True) -> Path:
     from .features.schema import build_layout
     from .features.store import table_dir
     from .versions.vocab import load_vocabulary
 
     layout = build_layout(load_vocabulary(get_profile(cfg.game_version).vocabulary))
-    path = table_dir(cfg.workspace, layout.schema)
-    if not (path / "manifest.json").is_file():
-        raise ConfigError(f"no features for {cfg.workspace}; run `chunktriager -w {cfg.workspace} features`")
+    path = table_dir(world.cache_dir, layout.schema)
+    if required and not (path / "manifest.json").is_file():
+        raise ConfigError(f"world {world.name!r} is not prepared; run `chunktriager prepare {world.name}`")
     return path
 
 
-def _load_worlds(paths: list[Path]):
+def _load_world(cfg: Config, world: World, labelled: bool = True):
     from .model.dataset import load_world
     from .store import read_labels
 
-    worlds, cfgs = [], []
-    for ws in paths:
-        cfg = load_config(ws)
-        labels = read_labels(cfg.db_path, cfg.dimension)
-        w = load_world(_features_dir(cfg), labels, cfg.training.unlabeled, name=cfg.workspace.name)
-        print(f"  {w.name}: {int((w.y >= 0).sum())} chunks, {int((w.y == 1).sum())} player-made")
-        worlds.append(w)
-        cfgs.append(cfg)
-    return worlds, cfgs
+    labels = read_labels(world.labels_path, cfg.dimension) if labelled else None
+    w = load_world(_features_dir(cfg, world), labels, world.unlabeled, name=world.name)
+    if labelled:
+        print(f"  {w.name} ({world.role}): {int((w.y >= 0).sum())} chunks, {int((w.y == 1).sum())} player-made")
+    return w
+
+
+def _model_dir(cfg: Config, override: Path | None) -> Path:
+    return override.resolve() if override else cfg.model_dir
+
+
+# Commands ----------------------------------------------------------------------
+
+def cmd_worlds(args: argparse.Namespace) -> int:
+    from .store import read_labels
+
+    cfg = load_config(args.config)
+    profile = get_profile(cfg.game_version)
+    if not cfg.worlds:
+        print(f"no worlds in {cfg.path}")
+        return 0
+    for w in cfg.worlds:
+        feats = _features_dir(cfg, w, required=False)
+        prepared = "prepared" if (feats / "manifest.json").is_file() else "not prepared"
+        gen = profile.read_generator(w.path, cfg.dimension) if w.path.is_dir() else None
+        labels = read_labels(w.labels_path, cfg.dimension)
+        made = sum(1 for v in labels.values() if v == "keep")
+        tiles = "tiles" if any(w.tiles_dir.glob("*/0")) else "no tiles"
+        terrain = gen.describe() if gen else ("missing" if not w.path.is_dir() else "unknown terrain")
+        print(f"{w.name}  [{w.role}]  {terrain}; "
+              f"{prepared}, {tiles}, {made} labelled player-made")
+        print(f"    {w.path}")
+    return 0
+
+
+def cmd_prepare(args: argparse.Namespace) -> int:
+    from .features.pipeline import extract_dimension
+
+    cfg = load_config(args.config)
+    worlds = cfg.select(args.worlds)
+    if not worlds:
+        raise ConfigError(f"no worlds in {cfg.path}")
+    failed = 0
+    for world in worlds:
+        print(f"{world.name}")
+        dimension_dir = _dimension_dir(cfg, world)
+        errors = []
+
+        def progress(done: int, total: int, r) -> None:
+            if r.error:
+                errors.append(r)
+            print(f"\r  regions {done}/{total}", end="", flush=True)
+
+        out_dir, results = extract_dimension(
+            world.cache_dir, dimension_dir, cfg.game_version,
+            workers=args.workers, force=args.force, progress=progress,
+        )
+        print()
+        done = [r for r in results if not r.skipped and not r.error]
+        skipped = sum(r.skipped for r in results)
+        print(f"  {sum(r.chunks for r in done)} chunks in {len(done)} regions extracted"
+              + (f", {skipped} regions unchanged" if skipped else ""))
+        rejected = sum(r.rejected for r in results)
+        if rejected:
+            print(f"  {rejected} chunks skipped: DataVersion outside {cfg.game_version} "
+                  "(run forceUpgrade on the world copy to include them)")
+        for r in errors:
+            print(f"  {r.region.filename}: {r.error}", file=sys.stderr)
+        failed += bool(errors)
+    return 1 if failed else 0
+
+
+def cmd_render(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    if cfg.mcaselector is None:
+        raise ConfigError(f"set [mcaselector] command in {cfg.path} to render base maps")
+    names = args.layer or [layer.name for layer in cfg.layers]
+    try:
+        layers = [cfg.layer(n) for n in names]
+    except KeyError as e:
+        raise ConfigError(f"unknown layer {e.args[0]!r}") from None
+    for world in cfg.select(args.worlds):
+        dimension_dir = _dimension_dir(cfg, world)
+        regions = list_regions(dimension_dir / "region")
+        for layer in layers:
+            print(f"{world.name}: rendering layer {layer.name}")
+            render_layer(
+                cfg.mcaselector, dimension_dir, regions, layer, world.tiles_dir,
+                lambda done, total: print(f"\r  block {done}/{total}", end="", flush=True),
+            )
+            print()
+    return 0
+
+
+def cmd_label(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from .server import create_app
+
+    cfg = load_config(args.config)
+    world = cfg.world(args.world)
+    profile = get_profile(cfg.game_version)
+    app = create_app(cfg, world, profile, _dimension_dir(cfg, world), _features_dir(cfg, world))
+    port = args.port or cfg.server.port
+    print(f"{world.name}: open http://{cfg.server.host}:{port}/")
+    uvicorn.run(app, host=cfg.server.host, port=port, log_level="warning")
+    return 0
 
 
 def cmd_train(args: argparse.Namespace) -> int:
     from .model.train import train_worlds
 
-    paths = [args.workspace] + list(args.with_ or [])
+    cfg = load_config(args.config)
+    selected = cfg.select(roles=("train",))
+    if not selected:
+        raise ConfigError(f"no worlds with role = \"train\" in {cfg.path}")
     print("loading worlds")
-    worlds, cfgs = _load_worlds(paths)
-    if args.cv:
-        _report_cv(worlds)
-    bundle = train_worlds(worlds, cfgs[0].game_version)
-    out = args.out or (cfgs[0].models_dir / "current")
+    worlds = [_load_world(cfg, w) for w in selected]
+    try:
+        bundle = train_worlds(worlds, cfg.game_version, cfg.training.rounds, cfg.training.params)
+    except ValueError as e:
+        raise ConfigError(str(e)) from None
+    out = _model_dir(cfg, args.out)
     bundle.save(out)
     print(f"model saved to {out}")
     return 0
 
 
-def _report_cv(worlds) -> None:
-    import numpy as np
-    import scipy.sparse as sp
-    from sklearn.metrics import roc_auc_score
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    from .model.evaluate import report_grouped_cv, report_held_out
 
-    from .model.evaluate import protect_two_radii
-    from .model.train import assign_folds, fit, site_groups
-
-    # Folds are drawn per world; a world with no player-made chunks joins
-    # every fold's training set and is tested in its own right.
-    print("cross-validation (grouped by site)")
-    labelled = [w for w in worlds if (w.y == 1).any()]
-    natural_only = [w for w in worlds if not (w.y == 1).any()]
-    for w in labelled:
-        use = np.flatnonzero(w.y >= 0)
-        y = w.y[use].astype(np.int32)
-        folds = assign_folds(site_groups(w.positions[use], y), y, 5)
-        oof = np.zeros(len(use))
-        extra_X = [o.X[o.y >= 0] for o in worlds if o is not w]
-        extra_y = [o.y[o.y >= 0].astype(np.int32) for o in worlds if o is not w]
-        for f in range(5):
-            te = folds == f
-            model = fit(sp.vstack([w.X[use][~te], *extra_X], format="csr"), np.concatenate([y[~te], *extra_y]))
-            oof[te] = model.predict(w.X[use][te])
-        print(f"  {w.name}: ROC AUC {roc_auc_score(y, oof):.4f}")
-        for t in (3e-2, 1e-2, 3e-3):
-            hit = oof >= t
-            kept = protect_two_radii(w.positions[use], hit.astype(np.float32), w.rail_only[use] & hit, 8, 1) > 0
-            print(f"    t={t:.0e}: player-made protected {kept[y == 1].mean():.3f}, deletable {(~kept).mean():.3f}, "
-                  f"natural flagged {int((hit & (y == 0)).sum())}")
-    for w in natural_only:
-        others = [o for o in worlds if o is not w]
-        if not others:
-            continue
-        model = fit(sp.vstack([o.X[o.y >= 0] for o in others], format="csr"),
-                    np.concatenate([o.y[o.y >= 0].astype(np.int32) for o in others]))
-        p = model.predict(w.X[w.y >= 0])
-        print(f"  {w.name} (all natural, held out): " + ", ".join(
-            f"t={t:.0e} flagged {(p >= t).mean():.4f}" for t in (3e-2, 1e-2, 3e-3)))
-
-
-def cmd_predict(args: argparse.Namespace) -> int:
-    from .model.dataset import load_world
-    from .model.predict import predict_world, save_predictions
-    from .model.train import ModelBundle
-
-    cfg, _, _ = _context(args.workspace)
-    model_dir = args.model or (cfg.models_dir / "current")
-    if not (model_dir / "meta.json").is_file():
-        raise ConfigError(f"no model at {model_dir}; run `chunktriager train` or pass --model")
-    bundle = ModelBundle.load(model_dir)
-    world = load_world(_features_dir(cfg), None, name=cfg.workspace.name)
-    try:
-        p = predict_world(bundle, world, cfg.protection)
-    except ValueError as e:
-        raise ConfigError(str(e)) from None
-    path = save_predictions(cfg.workspace, p)
-    print(f"{p.meta['chunks']} chunks: {p.meta['flagged']} likely player-made, "
-          f"{p.meta['protected']} protected ({p.meta['protected'] / p.meta['chunks']:.1%}); written to {path}")
+    cfg = load_config(args.config)
+    train = cfg.select(roles=("train",))
+    held = cfg.select(roles=("val", "test") if args.test else ("val",))
+    if not train:
+        raise ConfigError(f"no worlds with role = \"train\" in {cfg.path}")
+    print("loading worlds")
+    train_data = [_load_world(cfg, w) for w in train]
+    held_data = [_load_world(cfg, w) for w in held]
+    report_grouped_cv(train_data, cfg.training, cfg.protection)
+    if held_data:
+        report_held_out(train_data, held_data, cfg.training, cfg.protection)
     return 0
 
 
-def cmd_serve(args: argparse.Namespace) -> int:
-    import uvicorn
+def cmd_predict(args: argparse.Namespace) -> int:
+    from .model.predict import predict_world, save_predictions
+    from .model.train import ModelBundle
 
-    from .server import create_app
-
-    cfg, profile, dimension_dir = _context(args.workspace)
-    app = create_app(cfg, profile, dimension_dir)
-    print(f"open http://{cfg.server.host}:{cfg.server.port}/")
-    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="warning")
+    cfg = load_config(args.config)
+    model_dir = _model_dir(cfg, args.model)
+    if not (model_dir / "meta.json").is_file():
+        raise ConfigError(f"no model at {model_dir}; run `chunktriager train` or pass --model")
+    bundle = ModelBundle.load(model_dir)
+    for world in cfg.select(args.worlds):
+        data = _load_world(cfg, world, labelled=False)
+        try:
+            p = predict_world(bundle, data, cfg.protection)
+        except ValueError as e:
+            raise ConfigError(f"world {world.name!r}: {e}") from None
+        save_predictions(world.cache_dir, p)
+        print(f"{world.name}: {p.meta['chunks']} chunks, {p.meta['flagged']} likely player-made, "
+              f"{p.meta['protected']} protected ({p.meta['protected'] / max(1, p.meta['chunks']):.1%})")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chunktriager")
-    parser.add_argument("-w", "--workspace", type=Path, default=None,
-                        help="workspace folder holding triage.toml (default: set with `use`)")
+    parser.add_argument("-c", "--config", type=Path, default=None,
+                        help=f"configuration file (default: ./{CONFIG_NAME})")
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("init", help="create a workspace config and make it the default")
-    p.add_argument("--world", type=Path, help="force-upgraded world copy")
+
+    p = sub.add_parser("init", help="write a configuration template")
+    p.add_argument("--worlds", type=Path, action="append",
+                   help="add every save in this folder as a world (repeatable)")
     p.set_defaults(func=cmd_init)
-    p = sub.add_parser("use", help="set or show the default workspace")
-    p.add_argument("folder", type=Path, nargs="?", help="workspace folder (omit to show)")
-    p.set_defaults(func=cmd_use)
-    p = sub.add_parser("scan", help="build the chunk index from region files")
-    p.add_argument("--allow-problems", action="store_true",
-                   help="update the index even if some chunks could not be read")
-    p.set_defaults(func=cmd_scan)
-    p = sub.add_parser("render", help="render base-map tiles with MCA Selector")
-    p.add_argument("layers", nargs="*", help="layer names (default: all)")
-    p.set_defaults(func=cmd_render)
-    p = sub.add_parser("features", help="extract per-chunk features for training")
+
+    sub.add_parser("worlds", help="list configured worlds and their state").set_defaults(func=cmd_worlds)
+
+    p = sub.add_parser("prepare", help="extract per-chunk features (all worlds by default)")
+    p.add_argument("worlds", nargs="*", help="world names")
     p.add_argument("--workers", type=int, help="worker processes (default: CPU count - 1)")
     p.add_argument("--force", action="store_true", help="recompute regions that are up to date")
-    p.set_defaults(func=cmd_features)
-    p = sub.add_parser("train", help="train a model on this workspace and others")
-    p.add_argument("--with", dest="with_", type=Path, action="append",
-                   help="another workspace to train on (repeatable)")
-    p.add_argument("--cv", action="store_true", help="report grouped cross-validation first")
-    p.add_argument("--out", type=Path, help="model folder (default: <workspace>/models/current)")
+    p.set_defaults(func=cmd_prepare)
+
+    p = sub.add_parser("render", help="render base-map tiles with MCA Selector")
+    p.add_argument("worlds", nargs="*", help="world names (default: all)")
+    p.add_argument("--layer", action="append", help="layer name (repeatable; default: all)")
+    p.set_defaults(func=cmd_render)
+
+    p = sub.add_parser("label", help="open the labeling page for one world")
+    p.add_argument("world", help="world name")
+    p.add_argument("--port", type=int, help="override [server] port")
+    p.set_defaults(func=cmd_label)
+
+    p = sub.add_parser("train", help="train a model on the worlds with role train")
+    p.add_argument("--out", type=Path, help="model folder (default: `model` in the config)")
     p.set_defaults(func=cmd_train)
-    p = sub.add_parser("predict", help="score every chunk with a trained model")
-    p.add_argument("--model", type=Path, help="model folder (default: <workspace>/models/current)")
+
+    p = sub.add_parser("evaluate", help="cross-validate train worlds and score val worlds")
+    p.add_argument("--test", action="store_true", help="also score worlds with role test")
+    p.set_defaults(func=cmd_evaluate)
+
+    p = sub.add_parser("predict", help="score chunks with a trained model (all worlds by default)")
+    p.add_argument("worlds", nargs="*", help="world names")
+    p.add_argument("--model", type=Path, help="model folder (default: `model` in the config)")
     p.set_defaults(func=cmd_predict)
-    sub.add_parser("serve", help="start the labeling UI").set_defaults(func=cmd_serve)
+
     args = parser.parse_args(argv)
+    args.config = args.config or default_config_path()
     try:
-        if args.func is not cmd_use:
-            args.workspace = workspace_mod.resolve(args.workspace, for_init=args.func is cmd_init)
         return args.func(args)
     except (ConfigError, UnknownVersionError, RenderError) as e:
         print(f"error: {e}", file=sys.stderr)

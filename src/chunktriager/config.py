@@ -1,18 +1,34 @@
-"""Workspace configuration loaded from ``triage.toml``.
+"""Configuration file describing one training setup.
 
-A workspace is a directory outside the repository that holds the config,
-the label database, rendered tiles and exported selections for one world.
+A configuration lists the worlds to work with and the role each one plays,
+where derived data and the model go, and tool settings. Users keep their
+own files anywhere; ``chunktriager init`` writes a commented template.
+Relative paths are resolved against the folder holding the file.
+
+Data layout under ``data_dir``::
+
+    labels/<world>.sqlite3     human labels, the only data that cannot be rebuilt
+    cache/<world>/             features (also the chunk index), tiles, predictions
 """
 
 from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_NAME = "triage.toml"
+CONFIG_NAME = "chunktriager.toml"
 _LAYER_NAME = re.compile(r"^[a-z0-9_-]+$")
+# World names become file and folder names.
+_BAD_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+# train: the model is fitted on these worlds; ``evaluate`` cross-validates them.
+# val:   scored by ``evaluate`` with a model fitted on the train worlds.
+# test:  scored only by ``evaluate --test``, kept aside for the final check.
+# none:  prepared and labelable, not used by the model (e.g. while labeling).
+ROLES = ("train", "val", "test", "none")
+UNLABELED = ("natural", "ignore")
 
 
 class ConfigError(Exception):
@@ -26,6 +42,12 @@ class RenderLayer:
     name: str
     title: str
     args: tuple[str, ...] = ()
+
+
+DEFAULT_LAYERS = (
+    RenderLayer("surface", "Surface"),
+    RenderLayer("below-60", "Below Y=60", ("--render-height", "60")),
+)
 
 
 @dataclass(frozen=True)
@@ -48,10 +70,14 @@ RAILS = ("minecraft:rail", "minecraft:powered_rail", "minecraft:detector_rail", 
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    # "natural": unlabeled chunks count as natural; label only player-made
-    # chunks. "ignore": train only on explicitly labeled chunks.
+    # Default for worlds that do not set their own: "natural" counts
+    # unlabeled chunks as natural, so only player-made chunks need labeling;
+    # "ignore" uses only explicitly labeled chunks.
     unlabeled: str = "natural"
     folds: int = 5
+    # None keeps the defaults in chunktriager.model.train.
+    rounds: int | None = None
+    params: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -66,32 +92,32 @@ class ProtectionConfig:
 
 
 @dataclass(frozen=True)
+class World:
+    name: str
+    path: Path
+    role: str
+    unlabeled: str
+    labels_path: Path
+    cache_dir: Path
+
+    @property
+    def tiles_dir(self) -> Path:
+        return self.cache_dir / "tiles"
+
+
+@dataclass(frozen=True)
 class Config:
-    workspace: Path
-    world: Path
-    dimension: str
+    path: Path
+    data_dir: Path
+    model_dir: Path
     game_version: str
-    mcaselector: McaSelectorConfig
+    dimension: str
+    mcaselector: McaSelectorConfig | None
     layers: tuple[RenderLayer, ...]
     server: ServerConfig
     training: TrainingConfig
     protection: ProtectionConfig
-
-    @property
-    def db_path(self) -> Path:
-        return self.workspace / "labels.sqlite3"
-
-    @property
-    def models_dir(self) -> Path:
-        return self.workspace / "models"
-
-    @property
-    def tiles_dir(self) -> Path:
-        return self.workspace / "tiles"
-
-    @property
-    def exports_dir(self) -> Path:
-        return self.workspace / "exports"
+    worlds: tuple[World, ...]
 
     def layer(self, name: str) -> RenderLayer:
         for layer in self.layers:
@@ -99,8 +125,27 @@ class Config:
                 return layer
         raise KeyError(name)
 
+    def world(self, name: str) -> World:
+        for w in self.worlds:
+            if w.name == name:
+                return w
+        known = ", ".join(w.name for w in self.worlds) or "none"
+        raise ConfigError(f"no world named {name!r} in {self.path}; configured: {known}")
 
-def _resolve(base: Path, value: str) -> Path:
+    def select(self, names: list[str] | None = None, roles: tuple[str, ...] = ROLES) -> list[World]:
+        """Worlds by name (all named ones, any role) or else every world with one of ``roles``."""
+        if names:
+            return [self.world(n) for n in names]
+        return [w for w in self.worlds if w.role in roles]
+
+
+def default_config_path() -> Path:
+    return Path.cwd() / CONFIG_NAME
+
+
+def _resolve(base: Path, value: object, key: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise ConfigError(f"{key} must be a path string")
     path = Path(value).expanduser()
     return path if path.is_absolute() else (base / path).resolve()
 
@@ -111,21 +156,60 @@ def _str_tuple(value: object, key: str) -> tuple[str, ...]:
     return tuple(value)
 
 
-def load_config(workspace: Path) -> Config:
-    workspace = workspace.resolve()
-    path = workspace / CONFIG_NAME
-    if not path.is_file():
-        raise ConfigError(f"{path} not found; run `chunktriager init` first")
-    with path.open("rb") as f:
-        raw = tomllib.load(f)
+def _choice(value: object, options: tuple[str, ...], key: str) -> str:
+    if value not in options:
+        raise ConfigError(f"{key} must be one of {', '.join(map(repr, options))}, got {value!r}")
+    return value
 
+
+def _worlds(raw: list, base: Path, data_dir: Path, unlabeled: str) -> tuple[World, ...]:
+    worlds = []
+    for i, entry in enumerate(raw):
+        key = f"worlds[{i}]"
+        if "path" not in entry:
+            raise ConfigError(f"{key} needs a path")
+        path = _resolve(base, entry["path"], f"{key}.path")
+        name = entry.get("name", path.name)
+        if not isinstance(name, str) or not name.strip() or _BAD_NAME.search(name) or name in (".", ".."):
+            raise ConfigError(f"{key}.name {name!r} cannot be used as a file name")
+        worlds.append(World(
+            name=name,
+            path=path,
+            role=_choice(entry.get("role", "train"), ROLES, f"{key}.role"),
+            unlabeled=_choice(entry.get("unlabeled", unlabeled), UNLABELED, f"{key}.unlabeled"),
+            labels_path=data_dir / "labels" / f"{name}.sqlite3",
+            cache_dir=data_dir / "cache" / name,
+        ))
+    names = [w.name.casefold() for w in worlds]
+    if len(set(names)) != len(names):
+        raise ConfigError("world names must be unique (case-insensitive); set `name` on duplicates")
+    return tuple(worlds)
+
+
+def load_config(path: Path) -> Config:
+    path = path.resolve()
+    if not path.is_file():
+        raise ConfigError(f"{path} not found; run `chunktriager init` to create one, or pass -c <file>")
     try:
-        world = _resolve(workspace, raw["world"])
-        game_version = str(raw["game_version"])
-        mca = raw["mcaselector"]
-        command = _str_tuple(mca["command"], "mcaselector.command")
-    except KeyError as e:
-        raise ConfigError(f"missing required key {e.args[0]!r} in {path}") from None
+        with path.open("rb") as f:
+            raw = tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{path}: {e}") from None
+    base = path.parent
+
+    data_dir = _resolve(base, raw.get("data_dir", "data"), "data_dir")
+    model_dir = _resolve(base, raw["model"], "model") if "model" in raw else data_dir / "models" / "current"
+
+    mca = raw.get("mcaselector")
+    mcaselector = None
+    if mca is not None:
+        if "command" not in mca:
+            raise ConfigError("mcaselector.command is required when [mcaselector] is present")
+        mcaselector = McaSelectorConfig(
+            command=_str_tuple(mca["command"], "mcaselector.command"),
+            block_regions=int(mca.get("block_regions", 8)),
+            timeout=int(mca.get("timeout", 3600)),
+        )
 
     layers = []
     for entry in raw.get("layers", []):
@@ -134,34 +218,33 @@ def load_config(workspace: Path) -> Config:
             raise ConfigError(f"invalid layer name {name!r}")
         args = _str_tuple(entry.get("args", []), f"layers.{name}.args")
         layers.append(RenderLayer(name, entry.get("title", name), args))
-    if not layers:
-        raise ConfigError("at least one [[layers]] entry is required")
     if len({layer.name for layer in layers}) != len(layers):
         raise ConfigError("layer names must be unique")
 
     server = raw.get("server", {})
     training = raw.get("training", {})
-    if training.get("unlabeled", "natural") not in ("ignore", "natural"):
-        raise ConfigError('training.unlabeled must be "ignore" or "natural"')
+    unlabeled = _choice(training.get("unlabeled", "natural"), UNLABELED, "training.unlabeled")
+    params = training.get("params", {})
+    if not isinstance(params, dict):
+        raise ConfigError("training.params must be a table")
     prot = raw.get("protection", {})
     return Config(
-        workspace=workspace,
-        world=world,
+        path=path,
+        data_dir=data_dir,
+        model_dir=model_dir,
+        game_version=str(raw.get("game_version", "java-26.2")),
         dimension=raw.get("dimension", "minecraft:overworld"),
-        game_version=game_version,
-        mcaselector=McaSelectorConfig(
-            command=command,
-            block_regions=int(mca.get("block_regions", 8)),
-            timeout=int(mca.get("timeout", 3600)),
-        ),
-        layers=tuple(layers),
+        mcaselector=mcaselector,
+        layers=tuple(layers) or DEFAULT_LAYERS,
         server=ServerConfig(
             host=server.get("host", "127.0.0.1"),
             port=int(server.get("port", 8765)),
         ),
         training=TrainingConfig(
-            unlabeled=training.get("unlabeled", "natural"),
+            unlabeled=unlabeled,
             folds=int(training.get("folds", 5)),
+            rounds=int(training["rounds"]) if "rounds" in training else None,
+            params=dict(params),
         ),
         protection=ProtectionConfig(
             radius=int(prot.get("radius", 8)),
@@ -170,4 +253,5 @@ def load_config(workspace: Path) -> Config:
                                            "protection.short_radius_blocks"),
             threshold=float(prot.get("threshold", 0.01)),
         ),
+        worlds=_worlds(raw.get("worlds", []), base, data_dir, unlabeled),
     )

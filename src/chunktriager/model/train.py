@@ -83,11 +83,12 @@ def assign_folds(groups: np.ndarray, y: np.ndarray, k: int, seed: int = 0) -> np
     return np.array([fold_of[g] for g in groups])
 
 
-def fit(X: sp.csr_matrix, y: np.ndarray, rounds: int = ROUNDS) -> lgb.Booster:
+def fit(X: sp.csr_matrix, y: np.ndarray, rounds: int | None = None, params: dict | None = None) -> lgb.Booster:
     # Natural chunks vastly outnumber player-made ones; weight positives so
     # both classes carry equal total weight.
     w = np.where(y == 1, (y == 0).sum() / max(1, (y == 1).sum()), 1.0)
-    return lgb.train(PARAMS, lgb.Dataset(X, y, weight=w, free_raw_data=False), rounds)
+    return lgb.train({**PARAMS, **(params or {})}, lgb.Dataset(X, y, weight=w, free_raw_data=False),
+                     rounds or ROUNDS)
 
 
 @dataclass
@@ -151,7 +152,7 @@ class ModelBundle:
             raise ValueError("derived feature version does not match the model; retrain")
 
 
-def train_worlds(worlds, game_version: str) -> ModelBundle:
+def train_worlds(worlds, game_version: str, rounds: int | None = None, params: dict | None = None) -> ModelBundle:
     import datetime
 
     from .derived import DERIVED_VERSION
@@ -167,14 +168,14 @@ def train_worlds(worlds, game_version: str) -> ModelBundle:
     X, y = sp.vstack(Xs, format="csr"), np.concatenate(ys)
     if y.sum() == 0:
         raise ValueError("no player-made chunks in the training worlds")
-    booster = fit(X, y)
+    booster = fit(X, y, rounds, params)
     meta = {
         "format": MODEL_FORMAT,
         "game_version": game_version,
         "feature_fingerprint": worlds[0].fingerprint,
         "derived_version": DERIVED_VERSION,
         "n_features": X.shape[1],
-        "params": PARAMS, "rounds": ROUNDS,
+        "params": {**PARAMS, **(params or {})}, "rounds": rounds or ROUNDS,
         "trained_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "worlds": [{"name": w.name, "chunks": int((w.y >= 0).sum()), "player_made": int((w.y == 1).sum())}
                    for w in worlds],

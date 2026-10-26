@@ -41,18 +41,15 @@ def test_at_recall():
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from chunktriager.cli import main
 from chunktriager.config import load_config
 from chunktriager.model.derived import derived_columns
 from chunktriager.model.predict import load_predictions
-from chunktriager.server import create_app
 from chunktriager.store import Store
-from chunktriager.versions import get_profile
 
 from .test_features import flat_world_chunk
-from .conftest import write_region
+from .conftest import write_config, write_region
 
 
 def _make_world(root: Path, houses, seed: int) -> Path:
@@ -70,37 +67,33 @@ def _make_world(root: Path, houses, seed: int) -> Path:
     return root
 
 
-def _workspace(tmp: Path, name: str, world: Path) -> Path:
-    ws = tmp / name
-    assert main(["-w", str(ws), "init", "--world", str(world)]) == 0
-    for cmd in (["scan"], ["features", "--workers", "1"]):
-        assert main(["-w", str(ws), *cmd]) == 0
-    return ws
+def _label(config: Path, name: str, houses) -> None:
+    w = load_config(config).world(name)
+    store = Store(w.labels_path)
+    store.set_labels("minecraft:overworld", houses, "keep", "area", set(houses))
+    store.close()
 
 
 @pytest.fixture
-def trained(tmp_path: Path, monkeypatch):
+def trained(tmp_path: Path):
     """Train on one labelled world, predict on a second world with other builds."""
-    monkeypatch.setenv("CHUNKTRIAGER_HOME", str(tmp_path / "home"))
     train_houses = {(x, z) for x in range(0, 3) for z in range(0, 3)} | {(x, z) for x in range(28, 31) for z in range(28, 31)}
-    ws_a = _workspace(tmp_path, "a", _make_world(tmp_path / "world_a", train_houses, 1))
-    store = Store(load_config(ws_a).db_path)
-    store.set_labels("minecraft:overworld", train_houses, "keep", "area")
-    store.close()
-    assert main(["-w", str(ws_a), "train"]) == 0
-
     test_houses = {(x, z) for x in range(14, 17) for z in range(5, 7)}
-    ws_b = _workspace(tmp_path, "b", _make_world(tmp_path / "world_b", test_houses, 2))
-    store = Store(load_config(ws_b).db_path)
-    store.set_labels("minecraft:overworld", test_houses, "keep", "area")
-    store.close()
-    assert main(["-w", str(ws_b), "predict", "--model", str(load_config(ws_a).models_dir / "current")]) == 0
-    return ws_b, test_houses
+    config = write_config(tmp_path / "setup" / "chunktriager.toml", {
+        "a": (_make_world(tmp_path / "world_a", train_houses, 1), "train"),
+        "b": (_make_world(tmp_path / "world_b", test_houses, 2), "val"),
+    }, extra="[training]\nfolds = 2\n")
+    assert main(["-c", str(config), "prepare", "--workers", "1"]) == 0
+    _label(config, "a", train_houses)
+    _label(config, "b", test_houses)
+    assert main(["-c", str(config), "train"]) == 0
+    assert main(["-c", str(config), "predict", "b"]) == 0
+    return config, test_houses
 
 
 def test_predict_finds_builds_and_protects_around_them(trained):
-    ws, houses = trained
-    p = load_predictions(ws)
+    config, houses = trained
+    p = load_predictions(load_config(config).world("b").cache_dir)
     prob = {tuple(map(int, xz)): v for xz, v in zip(p.positions, p.prob)}
     assert min(prob[h] for h in houses) > 0.5
     prot = {tuple(map(int, xz)) for xz, v in zip(p.positions, p.protected) if v}
@@ -108,10 +101,10 @@ def test_predict_finds_builds_and_protects_around_them(trained):
 
 
 def test_server_serves_predictions_and_review(trained):
-    ws, houses = trained
-    cfg = load_config(ws)
-    profile = get_profile(cfg.game_version)
-    client = TestClient(create_app(cfg, profile, profile.dimension_dir(cfg.world, cfg.dimension)))
+    from .test_cli_server import make_client
+
+    config, houses = trained
+    client = make_client(config, "b")
     meta = client.get("/api/meta").json()["predictions"]
     assert meta["chunks"] == 1024 and meta["flagged"] >= len(houses)
     region = client.get("/api/predictions", params=dict(rx0=0, rz0=0, rx1=0, rz1=0)).json()["0,0"]
@@ -124,11 +117,22 @@ def test_model_refuses_mismatched_features(trained):
     from chunktriager.model.dataset import World
     from chunktriager.model.train import ModelBundle
 
-    ws, _ = trained
-    bundle = ModelBundle.load(ws.parent / "a" / "models" / "current")
+    config, _ = trained
+    bundle = ModelBundle.load(load_config(config).model_dir)
     fake = World("x", np.zeros((0, 2)), None, None, np.zeros(0, bool), ["a"], "different")
     with pytest.raises(ValueError, match="feature schema"):
         bundle.check(fake)
+
+
+def test_train_uses_only_train_role_and_evaluate_reports_val(trained, capsys):
+    import json
+
+    config, _ = trained
+    meta = json.loads((load_config(config).model_dir / "meta.json").read_text(encoding="utf-8"))
+    assert [w["name"] for w in meta["worlds"]] == ["a"]
+    assert main(["-c", str(config), "evaluate"]) == 0
+    out = capsys.readouterr().out
+    assert "a: ROC AUC" in out and "held-out worlds" in out and "b: 1024 chunks, 6 player-made" in out
 
 
 def test_derived_columns_are_stable():

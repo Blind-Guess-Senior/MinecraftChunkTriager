@@ -17,6 +17,7 @@ const START_ZOOM = -1;
 const CHUNK_MODE_MIN_ZOOM = -1;
 const MOUSE_KEY = "chunktriager.mouse";
 const VIEW_KEY = "chunktriager.view";
+let viewKey = VIEW_KEY;
 
 const state = {
   grid: true,
@@ -515,7 +516,7 @@ document.getElementById("clear-all").addEventListener("click", async () => {
 });
 map.on("moveend", () => {
   const c = map.getCenter();
-  localStorage.setItem(VIEW_KEY, JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }));
+  localStorage.setItem(viewKey, JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }));
 });
 
 // Model views -----------------------------------------------------------------
@@ -576,8 +577,11 @@ function setupModel(summary) {
 async function init() {
   const meta = await api("/api/meta");
   state.total = meta.chunk_count;
+  // Several worlds can be labeled on the same address; keep views apart.
+  viewKey = `${VIEW_KEY}.${meta.world}`;
+  document.title = `${meta.world} - Chunk Triager`;
   const box = document.getElementById("layers");
-  if (!meta.layers.length) box.innerHTML = `<div class="muted">尚未渲染底图，运行 chunktriager render</div>`;
+  if (!meta.layers.length) box.innerHTML = `<div class="muted">尚未渲染底图，运行 chunktriager render ${meta.world}</div>`;
   meta.layers.forEach((layer, i) => {
     const label = document.createElement("label");
     label.innerHTML = `<input type="radio" name="layer" ${i === 0 ? "checked" : ""}> ${layer.title}`;
@@ -591,7 +595,7 @@ async function init() {
 
   // Restore the last view; otherwise start at a chunk-readable zoom on the
   // center of the explored area.
-  const saved = JSON.parse(localStorage.getItem(VIEW_KEY) || "null");
+  const saved = JSON.parse(localStorage.getItem(viewKey) || "null");
   if (saved) {
     map.setView([saved.lat, saved.lng], saved.zoom);
   } else if (meta.regions.length) {

@@ -16,6 +16,7 @@ from .base import (
     BlockEntity,
     BlockEntityData,
     ChunkData,
+    Generator,
     ChunkInfo,
     EntityData,
     Section,
@@ -35,6 +36,26 @@ class Java26_2(VersionProfile):
         if not sep or not namespace or not path:
             raise ValueError(f"dimension must look like 'namespace:path', got {dimension!r}")
         return world / "dimensions" / namespace / path
+
+    def read_generator(self, world: Path, dimension: str) -> Generator | None:
+        # Since 26.1 world generation settings have their own file.
+        path = world / "data" / "minecraft" / "world_gen_settings.dat"
+        if not path.is_file():
+            return None
+        root = nbtlib.load(path)
+        root = root.get("data", root)
+        gen = root.get("dimensions", {}).get(dimension, {}).get("generator")
+        if gen is None:
+            return None
+        kind = str(gen.get("type", ""))
+        if kind == "minecraft:noise":
+            return Generator("noise", kind)
+        if kind == "minecraft:flat":
+            settings = gen.get("settings", {})
+            layers = tuple((str(l["block"]), int(l["height"])) for l in settings.get("layers", []))
+            biome = settings.get("biome")
+            return Generator("flat", kind, layers, str(biome) if biome is not None else None)
+        return Generator("other", kind)
 
     def parse_chunk(self, root: nbtlib.Compound) -> ChunkInfo:
         try:

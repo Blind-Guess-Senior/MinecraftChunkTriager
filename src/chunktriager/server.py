@@ -11,7 +11,8 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .config import Config
+from .config import Config, World
+from .features.store import read_positions
 from .model.predict import FILE, load_predictions
 from .render import tile_path
 from .store import Store
@@ -48,9 +49,9 @@ def _region_state(chunks: set[tuple[int, int]], labels: dict, rx: int, rz: int) 
 class _PredictionCache:
     """Predictions file, reloaded when ``chunktriager predict`` rewrites it."""
 
-    def __init__(self, workspace: Path):
-        self.path = workspace / FILE
-        self.workspace = workspace
+    def __init__(self, cache_dir: Path):
+        self.path = cache_dir / FILE
+        self.cache_dir = cache_dir
         self.mtime = None
         self.p = None
         self.by_region: dict[tuple[int, int], tuple[bytearray, bytearray]] = {}
@@ -59,7 +60,7 @@ class _PredictionCache:
         m = self.path.stat().st_mtime if self.path.is_file() else None
         if m != self.mtime:
             self.mtime = m
-            self.p = load_predictions(self.workspace) if m else None
+            self.p = load_predictions(self.cache_dir) if m else None
             self.by_region = {}
             if self.p is not None:
                 for (x, z), prob, prot in zip(self.p.positions.tolist(), self.p.prob.tolist(),
@@ -87,26 +88,29 @@ class _PredictionCache:
                 for (rx, rz), v in self.by_region.items() if rx0 <= rx <= rx1 and rz0 <= rz <= rz1}
 
 
-def create_app(cfg: Config, profile: VersionProfile, dimension_dir: Path) -> FastAPI:
-    store = Store(cfg.db_path)
+def create_app(cfg: Config, world: World, profile: VersionProfile, dimension_dir: Path,
+               features_dir: Path) -> FastAPI:
+    store = Store(world.labels_path)
     dim = cfg.dimension
     region_dir = dimension_dir / "region"
-    # The chunk index only changes through `chunktriager scan`, which is run
-    # while the server is stopped, so it is loaded once here.
-    chunks = store.chunks(dim)
+    tiles_dir = world.tiles_dir
+    # The chunk index is the set of chunks with a feature row. It only
+    # changes through `chunktriager prepare`, so it is loaded once here.
+    chunks = read_positions(features_dir)
     present = {(x // REGION_CHUNKS, z // REGION_CHUNKS) for x, z in chunks}
     app = FastAPI(title="chunktriager")
-    preds = _PredictionCache(cfg.workspace)
+    preds = _PredictionCache(world.cache_dir)
 
     @app.get("/api/meta")
     def meta() -> dict:
         regions = sorted(present)
-        rendered = [l.name for l in cfg.layers if (cfg.tiles_dir / l.name).is_dir()]
+        rendered = [l.name for l in cfg.layers if (tiles_dir / l.name).is_dir()]
         zooms = [
             int(p.name) for name in rendered[:1]
-            for p in (cfg.tiles_dir / name).iterdir() if p.is_dir()
+            for p in (tiles_dir / name).iterdir() if p.is_dir()
         ]
         return {
+            "world": world.name,
             "dimension": dim,
             "game_version": profile.name,
             "layers": [{"name": l.name, "title": l.title} for l in cfg.layers if l.name in rendered],
@@ -209,7 +213,7 @@ def create_app(cfg: Config, profile: VersionProfile, dimension_dir: Path) -> Fas
             cfg.layer(layer)
         except KeyError:
             raise HTTPException(404) from None
-        path = tile_path(cfg.tiles_dir, layer, z, x, y)
+        path = tile_path(tiles_dir, layer, z, x, y)
         if not path.is_file():
             return Response(status_code=204)
         return FileResponse(path, media_type="image/png")

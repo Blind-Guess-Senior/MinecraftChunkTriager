@@ -1,6 +1,7 @@
-"""SQLite storage for the chunk index and labels.
+"""SQLite storage for one world's labels.
 
-A label says whether the chunk itself contains player-made content:
+The file holds human work only; the chunk index and everything else that
+can be rebuilt lives in the world's cache folder. A label says whether the chunk itself contains player-made content:
 ``keep`` = player-made, ``delete`` = natural (names kept for storage
 compatibility). Chunks without a label are not decided yet. Every change is appended to
 ``label_log`` grouped by batch, which backs undo.
@@ -19,10 +20,6 @@ LABELS = ("keep", "delete")
 SOURCES = ("single", "area", "model")
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS chunks (
-    dim TEXT NOT NULL, x INTEGER NOT NULL, z INTEGER NOT NULL,
-    PRIMARY KEY (dim, x, z)
-) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS labels (
     dim TEXT NOT NULL, x INTEGER NOT NULL, z INTEGER NOT NULL,
     label TEXT NOT NULL CHECK (label IN ('keep', 'delete')),
@@ -73,30 +70,6 @@ class Store:
     def close(self) -> None:
         self.conn.close()
 
-    # chunk index -----------------------------------------------------------
-
-    @_locked
-    def replace_chunks(self, dim: str, positions: Iterable[tuple[int, int]]) -> int:
-        with self.conn:
-            self.conn.execute("DELETE FROM chunks WHERE dim = ?", (dim,))
-            cur = self.conn.executemany(
-                "INSERT OR IGNORE INTO chunks (dim, x, z) VALUES (?, ?, ?)",
-                ((dim, x, z) for x, z in positions),
-            )
-        return cur.rowcount
-
-    @_locked
-    def chunks(self, dim: str) -> set[tuple[int, int]]:
-        rows = self.conn.execute("SELECT x, z FROM chunks WHERE dim = ?", (dim,))
-        return {(x, z) for x, z in rows}
-
-    @_locked
-    def chunk_exists(self, dim: str, x: int, z: int) -> bool:
-        row = self.conn.execute(
-            "SELECT 1 FROM chunks WHERE dim = ? AND x = ? AND z = ?", (dim, x, z)
-        ).fetchone()
-        return row is not None
-
     # labels ----------------------------------------------------------------
 
     @_locked
@@ -127,19 +100,17 @@ class Store:
         positions: Iterable[tuple[int, int]],
         label: str | None,
         source: str,
-        known: set[tuple[int, int]] | None = None,
+        known: set[tuple[int, int]],
     ) -> int:
         """Set (or clear, with ``label=None``) labels as one undoable batch.
 
-        Positions that are not in the chunk index are ignored. Returns the
+        Positions not in ``known`` (the chunk index) are ignored. Returns the
         number of chunks whose label actually changed.
         """
         if label is not None and label not in LABELS:
             raise StoreError(f"invalid label {label!r}")
         if source not in SOURCES:
             raise StoreError(f"invalid source {source!r}")
-        if known is None:
-            known = self.chunks(dim)
         targets = sorted({p for p in positions if p in known})
         if not targets:
             return 0
