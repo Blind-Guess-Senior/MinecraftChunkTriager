@@ -15,17 +15,46 @@ import numpy as np
 from scipy.ndimage import maximum_filter
 
 
+TILE = 256    # chunks per side of the dense grids ``protect`` works on
+
+
 def protect(positions: np.ndarray, prob: np.ndarray, radius: int) -> np.ndarray:
-    """Keep score per chunk: max probability within a (2r+1)^2 square."""
+    """Keep score per chunk: max probability within a (2r+1)^2 square.
+
+    Worked out tile by tile, each tile padded by ``radius`` and filled from
+    its neighbour tiles, so memory follows the chunks that exist rather
+    than the world's bounding box (worlds can have a few chunks loaded
+    near the world border, tens of thousands of chunks from the rest).
+    """
     if len(positions) == 0:
         return prob.copy()
-    lo = positions.min(axis=0)
-    shape = positions.max(axis=0) - lo + 1
-    grid = np.zeros(shape, dtype=np.float32)
-    ix = positions - lo
-    grid[ix[:, 0], ix[:, 1]] = prob
-    spread = maximum_filter(grid, size=2 * radius + 1, mode="constant", cval=0.0)
-    return spread[ix[:, 0], ix[:, 1]]
+    if radius >= TILE:
+        raise ValueError(f"radius must be below {TILE}")
+    positions = np.asarray(positions, dtype=np.int64)
+    prob = np.asarray(prob, dtype=np.float32)
+    tiles = positions // TILE
+    by_tile: dict[tuple[int, int], np.ndarray] = {}
+    order = np.lexsort((tiles[:, 1], tiles[:, 0]))
+    keys, starts = np.unique(tiles[order], axis=0, return_index=True)
+    for key, rows in zip(map(tuple, keys.tolist()), np.split(order, starts[1:])):
+        by_tile[key] = rows
+    out = np.zeros(len(positions), dtype=np.float32)
+    size = TILE + 2 * radius
+    for (tx, tz), own in by_tile.items():
+        origin = np.array([tx * TILE - radius, tz * TILE - radius])
+        grid = np.zeros((size, size), dtype=np.float32)
+        for dx in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                rows = by_tile.get((tx + dx, tz + dz))
+                if rows is None:
+                    continue
+                ix = positions[rows] - origin
+                inside = ((ix >= 0) & (ix < size)).all(axis=1)
+                grid[ix[inside, 0], ix[inside, 1]] = prob[rows[inside]]
+        spread = maximum_filter(grid, size=2 * radius + 1, mode="constant", cval=0.0)
+        ix = positions[own] - origin
+        out[own] = spread[ix[:, 0], ix[:, 1]]
+    return out
 
 
 def protect_two_radii(positions: np.ndarray, prob: np.ndarray, short_only: np.ndarray,
