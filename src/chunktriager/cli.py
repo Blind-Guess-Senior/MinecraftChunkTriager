@@ -261,19 +261,32 @@ def cmd_train(args: argparse.Namespace) -> int:
 
 
 def cmd_evaluate(args: argparse.Namespace) -> int:
-    from .model.evaluate import report_grouped_cv, report_held_out
+    from .model.evaluate import report_by_world, report_grouped_cv, report_held_out
 
     cfg = load_config(args.workdir)
+    profile = get_profile(cfg.game_version)
     train = cfg.select(roles=("train",))
     held = cfg.select(roles=("val", "test") if args.test else ("val",))
     if not train:
         raise ConfigError(f"no worlds with role = \"train\" in {cfg.path}")
+    terrain = {}
+    for w in train + held:
+        gen = profile.read_generator(w.path, cfg.dimension)
+        terrain[w.name] = gen.describe() if gen else "unknown terrain"
     print("loading worlds")
     train_data = [_load_world(cfg, w) for w in train]
     held_data = [_load_world(cfg, w) for w in held]
+    if args.by_world:
+        # Val worlds join the rotation; test worlds stay out of every fit.
+        pool = train_data + [d for d, w in zip(held_data, held) if w.role == "val"]
+        report_by_world(pool, cfg.training, cfg.protection, terrain)
+        tests = [d for d, w in zip(held_data, held) if w.role == "test"]
+        if tests:
+            report_held_out(pool, tests, cfg.training, cfg.protection, terrain)
+        return 0
     report_grouped_cv(train_data, cfg.training, cfg.protection)
     if held_data:
-        report_held_out(train_data, held_data, cfg.training, cfg.protection)
+        report_held_out(train_data, held_data, cfg.training, cfg.protection, terrain)
     return 0
 
 
@@ -333,6 +346,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("evaluate", help="cross-validate train worlds and score val worlds")
     p.add_argument("--test", action="store_true", help="also score worlds with role test")
+    p.add_argument("--by-world", action="store_true",
+                   help="leave one world out over train and val worlds instead of grouped CV")
     p.set_defaults(func=cmd_evaluate)
 
     p = sub.add_parser("predict", help="score chunks with a trained model (all worlds by default)")

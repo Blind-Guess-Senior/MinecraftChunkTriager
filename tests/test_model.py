@@ -132,9 +132,18 @@ def test_train_uses_only_train_role_and_evaluate_reports_val(trained, capsys):
     assert [w["name"] for w in meta["worlds"]] == ["a"]
     assert main(["-w", str(config), "evaluate"]) == 0
     out = capsys.readouterr().out
-    assert "a: ROC AUC" in out and "held-out worlds" in out and "b: 1024 chunks, 6 player-made" in out
+    assert "a: ROC AUC" in out and "held-out worlds" in out and "b [unknown terrain]: 1024 chunks, 6 player-made" in out
 
 
 def test_derived_columns_are_stable():
     cols = derived_columns()
     assert len(cols) == len(set(cols)) == 55 and cols[-1] == "rail.only"
+
+
+def test_evaluate_by_world_rotates_train_and_val(trained, capsys):
+    config, _ = trained
+    assert main(["-w", str(config), "evaluate", "--by-world"]) == 0
+    out = capsys.readouterr().out
+    assert "leave one world out" in out
+    assert "  a [unknown terrain]: 1024 chunks, 18 player-made" in out
+    assert "  b [unknown terrain]: 1024 chunks, 6 player-made" in out

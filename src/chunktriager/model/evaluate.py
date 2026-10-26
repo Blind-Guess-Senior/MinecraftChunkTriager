@@ -140,21 +140,45 @@ def report_grouped_cv(worlds, training, prot) -> None:
         _print_protection(w.positions[use], oof, w.rail_only[use], y, prot)
 
 
-def report_held_out(train, held, training, prot) -> None:
-    """Fit on all train worlds, score each held-out world."""
+def _fit_on(parts, training):
     import scipy.sparse as sp
-    from sklearn.metrics import roc_auc_score
 
     from .train import fit
 
-    parts = [_usable(w) for w in train]
-    model = fit(sp.vstack([X for X, _ in parts], format="csr"), np.concatenate([y for _, y in parts]),
-                training.rounds, training.params)
+    return fit(sp.vstack([X for X, _ in parts], format="csr"), np.concatenate([y for _, y in parts]),
+               training.rounds, training.params)
+
+
+def _score(model, w, terrain: dict, prot) -> None:
+    from sklearn.metrics import roc_auc_score
+
+    use = np.flatnonzero(w.y >= 0)
+    y = w.y[use].astype(np.int32)
+    p = model.predict(w.X[use])
+    auc = f", ROC AUC {roc_auc_score(y, p):.4f}" if 0 < y.sum() < len(y) else ", all natural"
+    print(f"  {w.name} [{terrain.get(w.name, '?')}]: {len(y)} chunks, {int(y.sum())} player-made{auc}")
+    _print_protection(w.positions[use], p, w.rail_only[use], y, prot)
+
+
+def report_held_out(train, held, training, prot, terrain: dict) -> None:
+    """Fit on all train worlds, score each held-out world."""
+    model = _fit_on([_usable(w) for w in train], training)
     print("held-out worlds (model fitted on all train worlds)")
     for w in held:
-        use = np.flatnonzero(w.y >= 0)
-        y = w.y[use].astype(np.int32)
-        p = model.predict(w.X[use])
-        auc = f", ROC AUC {roc_auc_score(y, p):.4f}" if 0 < y.sum() < len(y) else ", all natural"
-        print(f"  {w.name}: {len(y)} chunks, {int(y.sum())} player-made{auc}")
-        _print_protection(w.positions[use], p, w.rail_only[use], y, prot)
+        _score(model, w, terrain, prot)
+
+
+def report_by_world(worlds, training, prot, terrain: dict) -> None:
+    """Leave one world out: score each world with a model fitted on all the others.
+
+    In flat and void worlds natural chunks are generator layers, so their
+    natural flagged rate says little; their player-made protection does.
+    """
+    parts = [_usable(w) for w in worlds]
+    print("leave one world out (model fitted on the other worlds)")
+    for i, w in enumerate(worlds):
+        others = [p for j, p in enumerate(parts) if j != i]
+        if not any((y == 1).any() for _, y in others):
+            print(f"  {w.name}: the other worlds have no player-made chunks, skipped")
+            continue
+        _score(_fit_on(others, training), w, terrain, prot)
