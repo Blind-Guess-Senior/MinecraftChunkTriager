@@ -10,9 +10,3 @@ wheels/
 
 # Temp files
 __TEMP__
-
-# Training datas
-/__TrainDatas__
-!/__TrainDatas__/
-__TrainDatas__/*
-!__TrainDatas__/.gitkeep
